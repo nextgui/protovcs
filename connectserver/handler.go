@@ -3,6 +3,7 @@ package connectserver
 import (
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -108,9 +109,25 @@ func Mount(mux *http.ServeMux, srv *server.Server, auth Authenticator, opts ...c
 		return err
 	}
 	opts = append([]connect.HandlerOption{readLimits()}, opts...)
-	mux.Handle(pb.NewStoreServiceHandler(NewStoreHandler(store, auth), opts...))
+	path, storeHandler := pb.NewStoreServiceHandler(NewStoreHandler(store, auth), opts...)
+	mux.Handle(path, withResponseController(storeHandler))
 	mux.Handle(pb.NewStoreAdminServiceHandler(NewAdminHandler(admin, auth), opts...))
 	return nil
+}
+
+type responseControllerKey struct{}
+
+func withResponseController(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx := context.WithValue(r.Context(), responseControllerKey{}, http.NewResponseController(w))
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+func clearReadDeadline(ctx context.Context) {
+	if rc, ok := ctx.Value(responseControllerKey{}).(*http.ResponseController); ok {
+		_ = rc.SetReadDeadline(time.Time{})
+	}
 }
 
 // denied is the response to a refused access check. Permission denied for a
@@ -119,14 +136,18 @@ func denied(err error) error {
 	return connect.NewError(connect.CodePermissionDenied, err)
 }
 
-// claimsOf authenticates a request. A request that does not authenticate gets
-// empty claims, which [Allow] refuses.
-func claimsOf(auth Authenticator, h http.Header) storetoken.Claims {
+// claimsOf authenticates a request. An expired token is reported as
+// unauthenticated so a client knows to remint; any other failure gets empty
+// claims, which [Allow] refuses.
+func claimsOf(auth Authenticator, h http.Header) (storetoken.Claims, error) {
 	c, err := auth.Authenticate(h)
 	if err != nil {
-		return storetoken.Claims{}
+		if errors.Is(err, storetoken.ErrExpired) {
+			return storetoken.Claims{}, connect.NewError(connect.CodeUnauthenticated, err)
+		}
+		return storetoken.Claims{}, nil
 	}
-	return c
+	return c, nil
 }
 
 // StoreHandler serves StoreService, checking each method's access first.
@@ -164,7 +185,10 @@ var StoreAccess = map[string]pb.Access{
 // allow checks a request against the access its method needs, and returns the
 // claims it carried.
 func allow(auth Authenticator, h http.Header, procedure, storeID string, table map[string]pb.Access) (storetoken.Claims, error) {
-	c := claimsOf(auth, h)
+	c, err := claimsOf(auth, h)
+	if err != nil {
+		return storetoken.Claims{}, err
+	}
 	need, ok := table[procedure[strings.LastIndex(procedure, "/")+1:]]
 	if !ok {
 		// A method nobody gave a level to is served to nobody.
@@ -197,6 +221,10 @@ func (h *StoreHandler) WatchRefs(ctx context.Context, req *connect.Request[pb.Wa
 	if err != nil {
 		return err
 	}
+	// The request message has been read, and a watch is a response that never
+	// ends, so the server's ReadTimeout must not stay armed while the stream
+	// is open.
+	clearReadDeadline(ctx)
 	return h.store.WatchRefs(ctx, req.Msg, c.Expires, stream.Send)
 }
 
@@ -289,7 +317,11 @@ func (h *AdminHandler) GetStore(ctx context.Context, req *connect.Request[pb.Get
 }
 
 func (h *AdminHandler) ListStores(ctx context.Context, req *connect.Request[pb.ListStoresRequest]) (*connect.Response[pb.ListStoresResponse], error) {
-	if err := AllowEveryStore(claimsOf(h.auth, req.Header())); err != nil {
+	c, err := claimsOf(h.auth, req.Header())
+	if err != nil {
+		return nil, err
+	}
+	if err := AllowEveryStore(c); err != nil {
 		return nil, denied(err)
 	}
 	resp, err := h.admin.ListStores(ctx, req.Msg)

@@ -33,6 +33,8 @@ go_test(
     ],
     deps = [
         ":connectserver",
+        "//:protovcs",
+        "//connecttransport",
         "//server",
         "//storetoken",
         "//proto/protovcs/v1",

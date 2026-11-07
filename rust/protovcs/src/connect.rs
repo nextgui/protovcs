@@ -140,6 +140,17 @@ fn from_connect(e: ConnectError) -> Error {
     }
 }
 
+/// FailedPrecondition from UpdateRef is a non-fast-forward move.
+fn update_ref_error(e: ConnectError) -> Error {
+    if e.code == ErrorCode::FailedPrecondition {
+        return Error::new(
+            ErrorKind::NotFastForward,
+            e.message.clone().unwrap_or_default(),
+        );
+    }
+    from_connect(e)
+}
+
 /// NotFound from GetCommits is a missing commit, not a missing chunk.
 fn get_commits_error(e: ConnectError) -> Error {
     if e.code == ErrorCode::NotFound {
@@ -227,7 +238,7 @@ where
                 .client
                 .update_ref_with_options(req, self.options().await?)
                 .await
-                .map_err(from_connect)?
+                .map_err(update_ref_error)?
                 .into_owned();
             let current = match resp.current.as_option() {
                 Some(r) => ref_state(r)?,
@@ -444,7 +455,7 @@ where
                 .admin
                 .get_usage_with_options(req, self.options().await?)
                 .await
-                .map_err(Error::from)?
+                .map_err(from_connect)?
                 .into_owned();
             Ok(resp.usage.as_option().cloned().unwrap_or_default())
         })
