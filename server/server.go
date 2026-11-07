@@ -230,20 +230,20 @@ func checkQuota(store *pb.Store, chunks uint32, bytes uint64, now time.Time) err
 	q, u := store.GetQuota(), store.GetUsage()
 
 	if max := q.GetMaxBytes(); max > 0 {
-		if want := u.GetBytes() + u.GetReservedBytes() + bytes; want > max {
+		if exceeds(max, addSat(u.GetBytes(), u.GetReservedBytes()), bytes) {
 			return fmt.Errorf("%w: max_bytes is %d, using %d, this write needs %d",
 				ErrQuotaExceeded, max, u.GetBytes()+u.GetReservedBytes(), bytes)
 		}
 	}
 	if max := q.GetMaxObjects(); max > 0 {
-		if want := u.GetObjects() + u.GetReservedObjects() + uint64(chunks); want > max {
+		if exceeds(max, addSat(u.GetObjects(), u.GetReservedObjects()), uint64(chunks)) {
 			return fmt.Errorf("%w: max_objects is %d, holding %d, this write needs %d",
 				ErrQuotaExceeded, max, u.GetObjects()+u.GetReservedObjects(), chunks)
 		}
 	}
 	if max := q.GetMaxBytesPerDay(); max > 0 {
 		today := bytesToday(u, now)
-		if want := today + bytes; want > max {
+		if exceeds(max, today, bytes) {
 			return fmt.Errorf("%w: max_bytes_per_day is %d, written %d today, this write needs %d",
 				ErrQuotaExceeded, max, today, bytes)
 		}
@@ -260,13 +260,13 @@ func checkCommitQuota(store *pb.Store, size uint64, now time.Time) error {
 		return fmt.Errorf("%w: max_commits is %d", ErrQuotaExceeded, max)
 	}
 	if max := q.GetMaxBytes(); max > 0 {
-		if want := u.GetBytes() + u.GetReservedBytes() + size; want > max {
+		if exceeds(max, addSat(u.GetBytes(), u.GetReservedBytes()), size) {
 			return fmt.Errorf("%w: max_bytes is %d, using %d, this commit is %d",
 				ErrQuotaExceeded, max, u.GetBytes()+u.GetReservedBytes(), size)
 		}
 	}
 	if max := q.GetMaxBytesPerDay(); max > 0 {
-		if want := bytesToday(u, now) + size; want > max {
+		if exceeds(max, bytesToday(u, now), size) {
 			return fmt.Errorf("%w: max_bytes_per_day is %d, written %d today, this commit is %d",
 				ErrQuotaExceeded, max, bytesToday(u, now), size)
 		}
@@ -791,6 +791,20 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 	stored := proto.Clone(commit).(*pb.Commit)
 	stored.Id = id.Bytes()
 
+	// A commit is named by its contents, so one already stored under this
+	// name is this commit, from a retry whose first response was lost. It is
+	// not charged again.
+	if _, err := s.storage.GetCommit(ctx, storeID, id); err == nil {
+		if reservationID != "" {
+			if err := s.releaseReservation(ctx, storeID, reservationID); err != nil {
+				return protovcs.CommitID{}, err
+			}
+		}
+		return id, nil
+	} else if !errors.Is(err, protovcs.ErrNoSuchCommit) {
+		return protovcs.CommitID{}, err
+	}
+
 	// Commits are never collected, and a commit's payload is opaque, so a
 	// commit is charged like a chunk: against max_chunk_bytes for its size, and
 	// against max_bytes and max_bytes_per_day for what it adds. Otherwise a
@@ -843,22 +857,39 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 	return id, nil
 }
 
+// releaseReservation gives a reservation's quota back, once.
+//
+// The reservation is taken before the quota is returned, so two releases of
+// one reservation, such as a PutCommit racing ExpireReservations, return it
+// once. A crash between the two leaves the quota held, which Reconcile
+// recounts from the reservations that remain.
 func (s *Server) releaseReservation(ctx context.Context, storeID, reservationID string) error {
-	r, err := s.storage.GetReservation(ctx, storeID, reservationID)
+	r, err := s.storage.TakeReservation(ctx, storeID, reservationID)
 	if err != nil || r == nil {
 		return err
 	}
-	if _, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+	_, err = s.storage.Update(ctx, storeID, func(st *pb.Store) error {
 		if st.Usage == nil {
 			st.Usage = &pb.Usage{}
 		}
 		st.Usage.ReservedObjects = saturatingSub(st.Usage.ReservedObjects, uint64(r.Chunks))
 		st.Usage.ReservedBytes = saturatingSub(st.Usage.ReservedBytes, r.Bytes)
 		return nil
-	}); err != nil {
-		return err
+	})
+	return err
+}
+
+// exceeds reports whether used plus more is over max, without overflowing.
+func exceeds(max, used, more uint64) bool {
+	return used > max || more > max-used
+}
+
+// addSat adds two counters, saturating rather than wrapping.
+func addSat(a, b uint64) uint64 {
+	if a > ^uint64(0)-b {
+		return ^uint64(0)
 	}
-	return s.storage.DeleteReservation(ctx, storeID, reservationID)
+	return a + b
 }
 
 func saturatingSub(a, b uint64) uint64 {

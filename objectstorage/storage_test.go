@@ -306,8 +306,8 @@ func TestCollectionOnEveryBucket(t *testing.T) {
 		}
 
 		age(orphanKey(orphan))
-		if err := st.DeleteReservation(ctx, storeID, r.ID); err != nil {
-			t.Fatalf("DeleteReservation: %v", err)
+		if _, err := st.TakeReservation(ctx, storeID, r.ID); err != nil {
+			t.Fatalf("TakeReservation: %v", err)
 		}
 
 		// The first run past the grace period marks the orphan. A run a grace

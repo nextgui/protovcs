@@ -473,6 +473,26 @@ func (s *Server) ExpireReservations(ctx context.Context, storeID string) (int, e
 // rather than a surprise found while investigating something else, and it
 // returns what it corrected so a caller can alarm on it being non-zero.
 func (s *Server) Reconcile(ctx context.Context, storeID string) (before, after *pb.Usage, err error) {
+	for attempt := 0; attempt < reconcileAttempts; attempt++ {
+		before, after, err = s.reconcileOnce(ctx, storeID)
+		if !errors.Is(err, errUsageMoved) {
+			return before, after, err
+		}
+	}
+	return before, nil, fmt.Errorf("protovcs: usage of %s kept changing while it was recounted", storeID)
+}
+
+// reconcileAttempts is how many times Reconcile counts again when usage moved
+// while it was counting.
+const reconcileAttempts = 5
+
+// errUsageMoved means a write changed usage while Reconcile was counting.
+var errUsageMoved = errors.New("protovcs: usage changed while it was counted")
+
+// reconcileOnce counts once, and writes the count only if usage is as it was
+// when counting began. Otherwise a charge made while it counted would be
+// overwritten by a count that did not include it.
+func (s *Server) reconcileOnce(ctx context.Context, storeID string) (before, after *pb.Usage, err error) {
 	store, err := s.storage.GetStore(ctx, storeID)
 	if err != nil {
 		return nil, nil, err
@@ -499,8 +519,23 @@ func (s *Server) Reconcile(ctx context.Context, storeID string) (before, after *
 	if err != nil {
 		return nil, nil, err
 	}
+	// Reserved usage is recounted too, from the reservations that exist, so a
+	// release interrupted between taking a reservation and returning its quota
+	// does not hold that quota for good.
+	reservations, err := s.storage.ListReservations(ctx, storeID)
+	if err != nil {
+		return nil, nil, err
+	}
+	var reservedObjects, reservedBytes uint64
+	for _, r := range reservations {
+		reservedObjects += uint64(r.Chunks)
+		reservedBytes += r.Bytes
+	}
 
 	updated, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+		if !proto.Equal(st.GetUsage(), before) {
+			return errUsageMoved
+		}
 		if st.Usage == nil {
 			st.Usage = &pb.Usage{}
 		}
@@ -508,6 +543,8 @@ func (s *Server) Reconcile(ctx context.Context, storeID string) (before, after *
 		st.Usage.Bytes = bytes
 		st.Usage.Commits = uint64(len(commits))
 		st.Usage.Refs = uint32(len(refs))
+		st.Usage.ReservedObjects = reservedObjects
+		st.Usage.ReservedBytes = reservedBytes
 		return nil
 	})
 	if err != nil {
