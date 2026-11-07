@@ -397,9 +397,9 @@ func emitDeclaredScope(b *strings.Builder, md protoreflect.MessageDescriptor,
 		fmt.Fprintf(b, "\t\tout = append(out, frag.Get%s()...)\n", acc)
 		fmt.Fprintf(b, "\t}\n\treturn out\n}\n\n")
 
-		fmt.Fprintf(b, "// Put%s stages one element of %q.\n", singular(acc), field)
+		fmt.Fprintf(b, "// Put%s stages one element of %q.\n", acc, field)
 		fmt.Fprintf(b, "func (v *%sView) Put%s(ctx context.Context, elem *%s) error {\n",
-			name, singular(acc), elemType)
+			name, acc, elemType)
 		fmt.Fprintf(b, "\treturn v.part.PutElement(ctx, %q, elem)\n}\n\n", field)
 	}
 
@@ -421,17 +421,6 @@ func splitFor(layout *pb.Layout, field string) *pb.Split {
 		}
 	}
 	return nil
-}
-
-// singular drops a trailing s, so a setter for "records" is PutRecord.
-func singular(name string) string {
-	if strings.HasSuffix(name, "ies") {
-		return name[:len(name)-3] + "y"
-	}
-	if strings.HasSuffix(name, "s") {
-		return name[:len(name)-1]
-	}
-	return name
 }
 
 // emitSplit writes the typed surface for one split: a scope type nothing else

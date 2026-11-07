@@ -435,7 +435,11 @@ impl Cache {
     async fn put_now(&self, chunks_in: Vec<SealedChunk>, now: f64) -> Result<u64> {
         let (tx, chunks, meta) = self.transaction(IdbTransactionMode::Readwrite).await?;
         let mut added = 0u64;
+        let mut seen = std::collections::HashSet::with_capacity(chunks_in.len());
         for c in &chunks_in {
+            if !seen.insert(c.id) {
+                continue;
+            }
             let k = key(&c.id);
             let req = chunks
                 .count_with_key(&k)
@@ -465,7 +469,11 @@ impl Cache {
     async fn drop_now(&self, ids: &[ChunkId]) -> Result<()> {
         let (tx, chunks, meta) = self.transaction(IdbTransactionMode::Readwrite).await?;
         let mut freed = 0.0;
+        let mut seen = std::collections::HashSet::with_capacity(ids.len());
         for id in ids {
+            if !seen.insert(*id) {
+                continue;
+            }
             let k = key(id);
             let req = chunks.get(&k).map_err(|e| js_err("dropping chunks", e))?;
             let value = request("dropping chunks", &req).await?;

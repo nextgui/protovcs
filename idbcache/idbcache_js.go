@@ -235,9 +235,17 @@ func (c *Cache) Get(ctx context.Context, ids []protovcs.ChunkID) ([]protovcs.Sea
 // evict on every Put.
 func (c *Cache) Put(_ context.Context, chunks []protovcs.SealedChunk) error {
 	now := c.now().UnixMilli()
-	kept := make([]protovcs.SealedChunk, len(chunks))
-	for i, ch := range chunks {
-		kept[i] = protovcs.SealedChunk{ID: ch.ID, Sealed: append([]byte(nil), ch.Sealed...)}
+	seen := make(map[protovcs.ChunkID]bool, len(chunks))
+	kept := make([]protovcs.SealedChunk, 0, len(chunks))
+	for _, ch := range chunks {
+		if seen[ch.ID] {
+			continue
+		}
+		seen[ch.ID] = true
+		kept = append(kept, protovcs.SealedChunk{ID: ch.ID, Sealed: append([]byte(nil), ch.Sealed...)})
+	}
+	if len(kept) == 0 {
+		return nil
 	}
 	c.background(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), writeTimeout)
@@ -284,14 +292,25 @@ func (c *Cache) put(ctx context.Context, chunks []protovcs.SealedChunk, now int6
 
 // Drop removes chunks that failed to open.
 func (c *Cache) Drop(ctx context.Context, ids []protovcs.ChunkID) error {
+	seen := make(map[protovcs.ChunkID]bool, len(ids))
+	unique := make([]protovcs.ChunkID, 0, len(ids))
+	for _, id := range ids {
+		if !seen[id] {
+			seen[id] = true
+			unique = append(unique, id)
+		}
+	}
+	if len(unique) == 0 {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctx, readTimeout)
 	defer cancel()
 	return c.transact(ctx, "dropping chunks", func(tx js.Value, done func(error)) []js.Func {
 		store := tx.Call("objectStore", chunkStore)
 		var freed int64
-		pending := len(ids)
+		pending := len(unique)
 		var funcs []js.Func
-		for _, id := range ids {
+		for _, id := range unique {
 			k := key(id)
 			req := store.Call("get", k)
 			got := js.FuncOf(func(js.Value, []js.Value) any {

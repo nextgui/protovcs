@@ -96,10 +96,10 @@ func TestAChunkPutIsGotBack(t *testing.T) {
 }
 
 // TestPuttingAChunkTwiceCountsItOnce checks that the total is the bytes held,
-// not the bytes ever put.
+// not the bytes ever put, including when a single Put names a chunk twice.
 func TestPuttingAChunkTwiceCountsItOnce(t *testing.T) {
 	c := open(t, 1<<20)
-	put(t, c, chunk(1, 300))
+	put(t, c, chunk(1, 300), chunk(1, 300))
 	put(t, c, chunk(1, 300))
 	if n := total(t, c); n != 300 {
 		t.Fatalf("total = %d, want 300", n)
@@ -143,7 +143,7 @@ func TestPassingTheLimitEvictsTheLeastRecentlyUsed(t *testing.T) {
 func TestDropRemovesAChunk(t *testing.T) {
 	c := open(t, 1<<20)
 	put(t, c, chunk(0, 100), chunk(1, 100))
-	if err := c.Drop(context.Background(), []protovcs.ChunkID{chunk(0, 0).ID}); err != nil {
+	if err := c.Drop(context.Background(), []protovcs.ChunkID{chunk(0, 0).ID, chunk(0, 0).ID}); err != nil {
 		t.Fatalf("Drop: %v", err)
 	}
 	if got := held(t, c, 2); got[0] || !got[1] {
