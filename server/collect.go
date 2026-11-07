@@ -156,15 +156,19 @@ func (s *Server) Collect(ctx context.Context, storeID string) (CollectResult, er
 		}
 	}
 
+	// A store being purged has no reachable set worth keeping. Everything goes,
+	// so its history is not read: a commit missing or unreadable must not
+	// keep a purge from finishing.
+	deleting := store.GetState() == pb.Store_STATE_PURGING
+
 	commitsBefore := store.GetUsage().GetCommits()
-	reachable, err := s.reachable(ctx, storeID, s.now().Add(-CollectionGrace))
-	if err != nil {
-		return out, fmt.Errorf("protovcs: not collecting, because reachability could not be computed: %w", err)
+	var reachable map[protovcs.ChunkID]bool
+	if !deleting {
+		if reachable, err = s.reachable(ctx, storeID, s.now().Add(-CollectionGrace)); err != nil {
+			return out, fmt.Errorf("protovcs: not collecting, because reachability could not be computed: %w", err)
+		}
 	}
 	out.Reachable = len(reachable)
-
-	// A store being purged has no reachable set worth keeping. Everything goes.
-	deleting := store.GetState() == pb.Store_STATE_PURGING
 
 	all, timed, err := s.listChunkInfo(ctx, storeID)
 	if err != nil {

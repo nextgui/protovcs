@@ -145,6 +145,7 @@ func (s *Storage) ListStores(ctx context.Context, req *pb.ListStoresRequest) ([]
 	}
 
 	var out []*pb.Store
+	var unreadable *server.UnreadableStoresError
 	for _, o := range objects {
 		if !strings.HasSuffix(o.Key, "/store.pb") {
 			continue
@@ -158,7 +159,12 @@ func (s *Storage) ListStores(ctx context.Context, req *pb.ListStoresRequest) ([]
 		}
 		store := &pb.Store{}
 		if err := proto.Unmarshal(raw, store); err != nil {
-			return nil, err
+			id, _ := hex.DecodeString(strings.TrimSuffix(strings.TrimPrefix(o.Key, "stores/"), "/store.pb"))
+			if unreadable == nil {
+				unreadable = &server.UnreadableStoresError{Err: err}
+			}
+			unreadable.IDs = append(unreadable.IDs, string(id))
+			continue
 		}
 		if o := req.GetOwner(); o != "" && store.GetOwner() != o {
 			continue
@@ -170,6 +176,9 @@ func (s *Storage) ListStores(ctx context.Context, req *pb.ListStoresRequest) ([]
 			continue
 		}
 		out = append(out, store)
+	}
+	if unreadable != nil {
+		return out, unreadable
 	}
 	return out, nil
 }

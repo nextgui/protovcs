@@ -52,10 +52,12 @@ func TestALockLeftByAnExitedProcessIsTakenOver(t *testing.T) {
 	}
 }
 
-// A lock whose pid is running is held, even when nothing else says so.
+// A lock whose pid is running is held, even when nothing else says so. The
+// parent's pid stands in for another running process; this process's own pid
+// would be taken over, since the lock lacks this process's token.
 func TestALockHeldByARunningProcessIsRefused(t *testing.T) {
 	dir := t.TempDir()
-	writeLock(t, dir, fmt.Sprintf("pid %d\n", os.Getpid()))
+	writeLock(t, dir, fmt.Sprintf("pid %d\n", os.Getppid()))
 
 	if b, err := objectstorage.OpenDir(dir); err == nil {
 		b.Close()

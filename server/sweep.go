@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
@@ -86,7 +87,14 @@ func (s *Server) Sweep(ctx context.Context) (SweepResult, error) {
 	var out SweepResult
 
 	stores, err := s.ListStores(ctx, &pb.ListStoresRequest{})
-	if err != nil {
+	var unreadable *UnreadableStoresError
+	if errors.As(err, &unreadable) {
+		// The stores it could read are still swept. Each unreadable one is
+		// reported as a failure of its own.
+		for _, id := range unreadable.IDs {
+			out.Stores = append(out.Stores, StoreSweep{StoreID: id, Err: unreadable.Err})
+		}
+	} else if err != nil {
 		return out, fmt.Errorf("protovcs: sweeping: listing stores: %w", err)
 	}
 

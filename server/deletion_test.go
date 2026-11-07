@@ -193,3 +193,27 @@ func TestARestoreDuringCollectionWins(t *testing.T) {
 		t.Fatalf("the store is %v, %v, want active", st.GetState(), err)
 	}
 }
+
+// commitsUnreadable fails every commit read, as storage does once a store's
+// history is damaged.
+type commitsUnreadable struct {
+	*server.MemStorage
+}
+
+func (c commitsUnreadable) GetCommit(ctx context.Context, storeID string, id protovcs.CommitID) (*pb.Commit, error) {
+	return nil, errors.New("the commit could not be read")
+}
+
+// Purging deletes every chunk, so it does not read the history, and a commit
+// that cannot be read does not keep the store from being purged.
+func TestAPurgeFinishesWhenTheHistoryCannotBeRead(t *testing.T) {
+	ctx := context.Background()
+	_, mem, now, id := deletedStore(t, 0)
+	broken := server.New(commitsUnreadable{mem}).WithClock(func() time.Time { return *now }).WithDeletionRetention(0)
+	if res, err := broken.Collect(ctx, storeID); err != nil || res.Deleted == 0 {
+		t.Fatalf("Collect returned %+v, %v, want the store purged", res, err)
+	}
+	if hasChunk(t, mem, id) {
+		t.Fatal("a purge left a chunk behind")
+	}
+}

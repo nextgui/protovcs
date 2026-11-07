@@ -27,7 +27,10 @@ go_library(
 
 go_test(
     name = "connectserver_test",
-    srcs = ["handler_test.go"],
+    srcs = [
+        "gzip_test.go",
+        "handler_test.go",
+    ],
     deps = [
         ":connectserver",
         "//server",

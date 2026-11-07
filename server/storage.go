@@ -13,6 +13,7 @@ package server
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	protovcs "github.com/nextgui/protovcs"
 	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
@@ -30,6 +31,20 @@ var ErrQuotaExceeded = errors.New("protovcs: store is at its limit")
 // ErrNoReservation is returned when chunks are uploaded without a live
 // reservation, or against one that has expired.
 var ErrNoReservation = errors.New("protovcs: no live reservation")
+
+// UnreadableStoresError is returned by ListStores alongside the stores it
+// could read, naming those whose record it could not. One damaged record does
+// not hide every other store.
+type UnreadableStoresError struct {
+	IDs []string
+	Err error
+}
+
+func (e *UnreadableStoresError) Error() string {
+	return fmt.Sprintf("protovcs: %d store record(s) could not be read, first %s: %v", len(e.IDs), e.IDs[0], e.Err)
+}
+
+func (e *UnreadableStoresError) Unwrap() error { return e.Err }
 
 // ErrNotRestorable is returned by RestoreStore for a store collection has
 // started purging.

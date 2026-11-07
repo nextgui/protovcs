@@ -55,7 +55,18 @@ jobs:
       - name: Allow Chrome's sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: idbcache in Chrome
-        run: GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/
+        # Chrome sometimes fails to start on the runner, which wasmbrowsertest
+        # reports as a websocket timeout before any test runs. Only that is
+        # retried; a failing test fails the job at once.
+        run: |
+          for attempt in 1 2 3; do
+            if GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/ 2>&1 | tee "$RUNNER_TEMP/idbcache.log"; then
+              exit 0
+            fi
+            grep -q "websocket url timeout reached" "$RUNNER_TEMP/idbcache.log" || exit 1
+            echo "Chrome did not start; trying again"
+          done
+          exit 1
 
   # The Rust client's own Bazel module in rust/, which the root module does
   # not load. It builds the crates from rust/Cargo.lock and runs their tests.
