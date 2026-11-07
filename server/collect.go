@@ -102,6 +102,10 @@ type CollectResult struct {
 	// to delete.
 	Marked int
 
+	// The store is marked for deletion and still inside its retention window,
+	// so nothing was deleted.
+	DeletionPending bool
+
 	// A commit was written while the run was working out what is reachable,
 	// so it deleted nothing. The next run collects what this one would have.
 	Interrupted bool
@@ -142,6 +146,15 @@ func (s *Server) Collect(ctx context.Context, storeID string) (CollectResult, er
 	if err != nil {
 		return out, err
 	}
+	if store.GetState() == pb.Store_STATE_DELETING {
+		if at := store.GetDeletedAt(); at != nil && s.now().Before(at.AsTime().Add(s.deletionRetention)) {
+			out.DeletionPending = true
+			return out, nil
+		}
+		if store, err = s.startPurge(ctx, storeID); err != nil || store == nil {
+			return out, err
+		}
+	}
 
 	commitsBefore := store.GetUsage().GetCommits()
 	reachable, err := s.reachable(ctx, storeID, s.now().Add(-CollectionGrace))
@@ -150,9 +163,8 @@ func (s *Server) Collect(ctx context.Context, storeID string) (CollectResult, er
 	}
 	out.Reachable = len(reachable)
 
-	// A store being deleted has no reachable set worth keeping. Everything goes
-	// once the retention window has passed.
-	deleting := store.GetState() == pb.Store_STATE_DELETING
+	// A store being purged has no reachable set worth keeping. Everything goes.
+	deleting := store.GetState() == pb.Store_STATE_PURGING
 
 	all, timed, err := s.listChunkInfo(ctx, storeID)
 	if err != nil {
@@ -271,6 +283,29 @@ func (s *Server) Collect(ctx context.Context, storeID string) (CollectResult, er
 		}
 	}
 	return out, firstErr
+}
+
+// startPurge moves a store marked for deletion to purging and returns the
+// record, or nil if it was restored in the meantime. The caller has checked
+// that the retention window has passed. A store marked before deleted_at
+// existed has no window.
+//
+// The move is a conditional update of the store's record, which RestoreStore
+// also changes, so once it succeeds the store can no longer be restored, and
+// if a restore got there first the store is left alone.
+func (s *Server) startPurge(ctx context.Context, storeID string) (*pb.Store, error) {
+	purged := false
+	updated, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+		purged = st.GetState() == pb.Store_STATE_DELETING
+		if purged {
+			st.State = pb.Store_STATE_PURGING
+		}
+		return nil
+	})
+	if err != nil || !purged {
+		return nil, err
+	}
+	return updated, nil
 }
 
 // markAndClaim records which chunks are unreachable and returns the ones a

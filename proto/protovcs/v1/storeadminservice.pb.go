@@ -28,6 +28,7 @@ const (
 	Store_STATE_UNSPECIFIED Store_State = 0
 	Store_STATE_ACTIVE      Store_State = 1
 	Store_STATE_DELETING    Store_State = 2
+	Store_STATE_PURGING     Store_State = 3
 )
 
 // Enum value maps for Store_State.
@@ -36,11 +37,13 @@ var (
 		0: "STATE_UNSPECIFIED",
 		1: "STATE_ACTIVE",
 		2: "STATE_DELETING",
+		3: "STATE_PURGING",
 	}
 	Store_State_value = map[string]int32{
 		"STATE_UNSPECIFIED": 0,
 		"STATE_ACTIVE":      1,
 		"STATE_DELETING":    2,
+		"STATE_PURGING":     3,
 	}
 )
 
@@ -117,7 +120,7 @@ func (x TriggerMaintenanceRequest_Kind) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use TriggerMaintenanceRequest_Kind.Descriptor instead.
 func (TriggerMaintenanceRequest_Kind) EnumDescriptor() ([]byte, []int) {
-	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{15, 0}
+	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{17, 0}
 }
 
 type Store struct {
@@ -130,6 +133,7 @@ type Store struct {
 	CreatedAt                *timestamppb.Timestamp `protobuf:"bytes,6,opt,name=created_at,json=createdAt,proto3" json:"created_at,omitempty"`
 	State                    Store_State            `protobuf:"varint,7,opt,name=state,proto3,enum=nextgui.protovcs.v1.Store_State" json:"state,omitempty"`
 	MinWritableSchemaVersion uint32                 `protobuf:"varint,8,opt,name=min_writable_schema_version,json=minWritableSchemaVersion,proto3" json:"min_writable_schema_version,omitempty"`
+	DeletedAt                *timestamppb.Timestamp `protobuf:"bytes,9,opt,name=deleted_at,json=deletedAt,proto3" json:"deleted_at,omitempty"`
 	unknownFields            protoimpl.UnknownFields
 	sizeCache                protoimpl.SizeCache
 }
@@ -218,6 +222,13 @@ func (x *Store) GetMinWritableSchemaVersion() uint32 {
 		return x.MinWritableSchemaVersion
 	}
 	return 0
+}
+
+func (x *Store) GetDeletedAt() *timestamppb.Timestamp {
+	if x != nil {
+		return x.DeletedAt
+	}
+	return nil
 }
 
 type Quota struct {
@@ -996,6 +1007,94 @@ func (x *DeleteStoreResponse) GetStore() *Store {
 	return nil
 }
 
+type RestoreStoreRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StoreId       string                 `protobuf:"bytes,1,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreStoreRequest) Reset() {
+	*x = RestoreStoreRequest{}
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[15]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreStoreRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreStoreRequest) ProtoMessage() {}
+
+func (x *RestoreStoreRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[15]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreStoreRequest.ProtoReflect.Descriptor instead.
+func (*RestoreStoreRequest) Descriptor() ([]byte, []int) {
+	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{15}
+}
+
+func (x *RestoreStoreRequest) GetStoreId() string {
+	if x != nil {
+		return x.StoreId
+	}
+	return ""
+}
+
+type RestoreStoreResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Store         *Store                 `protobuf:"bytes,1,opt,name=store,proto3" json:"store,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RestoreStoreResponse) Reset() {
+	*x = RestoreStoreResponse{}
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[16]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RestoreStoreResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RestoreStoreResponse) ProtoMessage() {}
+
+func (x *RestoreStoreResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[16]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RestoreStoreResponse.ProtoReflect.Descriptor instead.
+func (*RestoreStoreResponse) Descriptor() ([]byte, []int) {
+	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{16}
+}
+
+func (x *RestoreStoreResponse) GetStore() *Store {
+	if x != nil {
+		return x.Store
+	}
+	return nil
+}
+
 type TriggerMaintenanceRequest struct {
 	state         protoimpl.MessageState         `protogen:"open.v1"`
 	StoreId       string                         `protobuf:"bytes,1,opt,name=store_id,json=storeId,proto3" json:"store_id,omitempty"`
@@ -1006,7 +1105,7 @@ type TriggerMaintenanceRequest struct {
 
 func (x *TriggerMaintenanceRequest) Reset() {
 	*x = TriggerMaintenanceRequest{}
-	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[15]
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1018,7 +1117,7 @@ func (x *TriggerMaintenanceRequest) String() string {
 func (*TriggerMaintenanceRequest) ProtoMessage() {}
 
 func (x *TriggerMaintenanceRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[15]
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1031,7 +1130,7 @@ func (x *TriggerMaintenanceRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerMaintenanceRequest.ProtoReflect.Descriptor instead.
 func (*TriggerMaintenanceRequest) Descriptor() ([]byte, []int) {
-	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{15}
+	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *TriggerMaintenanceRequest) GetStoreId() string {
@@ -1057,7 +1156,7 @@ type TriggerMaintenanceResponse struct {
 
 func (x *TriggerMaintenanceResponse) Reset() {
 	*x = TriggerMaintenanceResponse{}
-	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[16]
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1069,7 +1168,7 @@ func (x *TriggerMaintenanceResponse) String() string {
 func (*TriggerMaintenanceResponse) ProtoMessage() {}
 
 func (x *TriggerMaintenanceResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[16]
+	mi := &file_proto_protovcs_v1_storeadminservice_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1082,7 +1181,7 @@ func (x *TriggerMaintenanceResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TriggerMaintenanceResponse.ProtoReflect.Descriptor instead.
 func (*TriggerMaintenanceResponse) Descriptor() ([]byte, []int) {
-	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{16}
+	return file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *TriggerMaintenanceResponse) GetJobId() string {
@@ -1096,7 +1195,7 @@ var File_proto_protovcs_v1_storeadminservice_proto protoreflect.FileDescriptor
 
 const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"\n" +
-	")proto/protovcs/v1/storeadminservice.proto\x12\x13nextgui.protovcs.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\xc4\x03\n" +
+	")proto/protovcs/v1/storeadminservice.proto\x12\x13nextgui.protovcs.v1\x1a\x1fgoogle/protobuf/timestamp.proto\"\x92\x04\n" +
 	"\x05Store\x12\x19\n" +
 	"\bstore_id\x18\x01 \x01(\tR\astoreId\x12\x14\n" +
 	"\x05owner\x18\x02 \x01(\tR\x05owner\x120\n" +
@@ -1106,11 +1205,14 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"\n" +
 	"created_at\x18\x06 \x01(\v2\x1a.google.protobuf.TimestampR\tcreatedAt\x126\n" +
 	"\x05state\x18\a \x01(\x0e2 .nextgui.protovcs.v1.Store.StateR\x05state\x12=\n" +
-	"\x1bmin_writable_schema_version\x18\b \x01(\rR\x18minWritableSchemaVersion\"D\n" +
+	"\x1bmin_writable_schema_version\x18\b \x01(\rR\x18minWritableSchemaVersion\x129\n" +
+	"\n" +
+	"deleted_at\x18\t \x01(\v2\x1a.google.protobuf.TimestampR\tdeletedAt\"W\n" +
 	"\x05State\x12\x15\n" +
 	"\x11STATE_UNSPECIFIED\x10\x00\x12\x10\n" +
 	"\fSTATE_ACTIVE\x10\x01\x12\x12\n" +
-	"\x0eSTATE_DELETING\x10\x02\"\xd4\x01\n" +
+	"\x0eSTATE_DELETING\x10\x02\x12\x11\n" +
+	"\rSTATE_PURGING\x10\x03\"\xd4\x01\n" +
 	"\x05Quota\x12\x1b\n" +
 	"\tmax_bytes\x18\x01 \x01(\x04R\bmaxBytes\x12\x1f\n" +
 	"\vmax_objects\x18\x02 \x01(\x04R\n" +
@@ -1162,6 +1264,10 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"\x12DeleteStoreRequest\x12\x19\n" +
 	"\bstore_id\x18\x01 \x01(\tR\astoreId\"G\n" +
 	"\x13DeleteStoreResponse\x120\n" +
+	"\x05store\x18\x01 \x01(\v2\x1a.nextgui.protovcs.v1.StoreR\x05store\"0\n" +
+	"\x13RestoreStoreRequest\x12\x19\n" +
+	"\bstore_id\x18\x01 \x01(\tR\astoreId\"H\n" +
+	"\x14RestoreStoreResponse\x120\n" +
 	"\x05store\x18\x01 \x01(\v2\x1a.nextgui.protovcs.v1.StoreR\x05store\"\xc3\x01\n" +
 	"\x19TriggerMaintenanceRequest\x12\x19\n" +
 	"\bstore_id\x18\x01 \x01(\tR\astoreId\x12G\n" +
@@ -1171,7 +1277,7 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"\fKIND_COLLECT\x10\x01\x12\x12\n" +
 	"\x0eKIND_RECONCILE\x10\x02\"3\n" +
 	"\x1aTriggerMaintenanceResponse\x12\x15\n" +
-	"\x06job_id\x18\x01 \x01(\tR\x05jobId2\xb8\x05\n" +
+	"\x06job_id\x18\x01 \x01(\tR\x05jobId2\x9d\x06\n" +
 	"\x11StoreAdminService\x12`\n" +
 	"\vCreateStore\x12'.nextgui.protovcs.v1.CreateStoreRequest\x1a(.nextgui.protovcs.v1.CreateStoreResponse\x12W\n" +
 	"\bGetStore\x12$.nextgui.protovcs.v1.GetStoreRequest\x1a%.nextgui.protovcs.v1.GetStoreResponse\x12]\n" +
@@ -1179,7 +1285,8 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"ListStores\x12&.nextgui.protovcs.v1.ListStoresRequest\x1a'.nextgui.protovcs.v1.ListStoresResponse\x12W\n" +
 	"\bSetQuota\x12$.nextgui.protovcs.v1.SetQuotaRequest\x1a%.nextgui.protovcs.v1.SetQuotaResponse\x12W\n" +
 	"\bGetUsage\x12$.nextgui.protovcs.v1.GetUsageRequest\x1a%.nextgui.protovcs.v1.GetUsageResponse\x12`\n" +
-	"\vDeleteStore\x12'.nextgui.protovcs.v1.DeleteStoreRequest\x1a(.nextgui.protovcs.v1.DeleteStoreResponse\x12u\n" +
+	"\vDeleteStore\x12'.nextgui.protovcs.v1.DeleteStoreRequest\x1a(.nextgui.protovcs.v1.DeleteStoreResponse\x12c\n" +
+	"\fRestoreStore\x12(.nextgui.protovcs.v1.RestoreStoreRequest\x1a).nextgui.protovcs.v1.RestoreStoreResponse\x12u\n" +
 	"\x12TriggerMaintenance\x12..nextgui.protovcs.v1.TriggerMaintenanceRequest\x1a/.nextgui.protovcs.v1.TriggerMaintenanceResponseB:Z8github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1b\x06proto3"
 
 var (
@@ -1195,7 +1302,7 @@ func file_proto_protovcs_v1_storeadminservice_proto_rawDescGZIP() []byte {
 }
 
 var file_proto_protovcs_v1_storeadminservice_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_proto_protovcs_v1_storeadminservice_proto_msgTypes = make([]protoimpl.MessageInfo, 17)
+var file_proto_protovcs_v1_storeadminservice_proto_msgTypes = make([]protoimpl.MessageInfo, 19)
 var file_proto_protovcs_v1_storeadminservice_proto_goTypes = []any{
 	(Store_State)(0),                    // 0: nextgui.protovcs.v1.Store.State
 	(TriggerMaintenanceRequest_Kind)(0), // 1: nextgui.protovcs.v1.TriggerMaintenanceRequest.Kind
@@ -1214,44 +1321,50 @@ var file_proto_protovcs_v1_storeadminservice_proto_goTypes = []any{
 	(*GetUsageResponse)(nil),            // 14: nextgui.protovcs.v1.GetUsageResponse
 	(*DeleteStoreRequest)(nil),          // 15: nextgui.protovcs.v1.DeleteStoreRequest
 	(*DeleteStoreResponse)(nil),         // 16: nextgui.protovcs.v1.DeleteStoreResponse
-	(*TriggerMaintenanceRequest)(nil),   // 17: nextgui.protovcs.v1.TriggerMaintenanceRequest
-	(*TriggerMaintenanceResponse)(nil),  // 18: nextgui.protovcs.v1.TriggerMaintenanceResponse
-	(*timestamppb.Timestamp)(nil),       // 19: google.protobuf.Timestamp
+	(*RestoreStoreRequest)(nil),         // 17: nextgui.protovcs.v1.RestoreStoreRequest
+	(*RestoreStoreResponse)(nil),        // 18: nextgui.protovcs.v1.RestoreStoreResponse
+	(*TriggerMaintenanceRequest)(nil),   // 19: nextgui.protovcs.v1.TriggerMaintenanceRequest
+	(*TriggerMaintenanceResponse)(nil),  // 20: nextgui.protovcs.v1.TriggerMaintenanceResponse
+	(*timestamppb.Timestamp)(nil),       // 21: google.protobuf.Timestamp
 }
 var file_proto_protovcs_v1_storeadminservice_proto_depIdxs = []int32{
 	3,  // 0: nextgui.protovcs.v1.Store.quota:type_name -> nextgui.protovcs.v1.Quota
 	4,  // 1: nextgui.protovcs.v1.Store.usage:type_name -> nextgui.protovcs.v1.Usage
-	19, // 2: nextgui.protovcs.v1.Store.created_at:type_name -> google.protobuf.Timestamp
+	21, // 2: nextgui.protovcs.v1.Store.created_at:type_name -> google.protobuf.Timestamp
 	0,  // 3: nextgui.protovcs.v1.Store.state:type_name -> nextgui.protovcs.v1.Store.State
-	3,  // 4: nextgui.protovcs.v1.CreateStoreRequest.quota:type_name -> nextgui.protovcs.v1.Quota
-	2,  // 5: nextgui.protovcs.v1.CreateStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
-	2,  // 6: nextgui.protovcs.v1.GetStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
-	0,  // 7: nextgui.protovcs.v1.ListStoresRequest.state:type_name -> nextgui.protovcs.v1.Store.State
-	2,  // 8: nextgui.protovcs.v1.ListStoresResponse.stores:type_name -> nextgui.protovcs.v1.Store
-	3,  // 9: nextgui.protovcs.v1.SetQuotaRequest.quota:type_name -> nextgui.protovcs.v1.Quota
-	2,  // 10: nextgui.protovcs.v1.SetQuotaResponse.store:type_name -> nextgui.protovcs.v1.Store
-	4,  // 11: nextgui.protovcs.v1.GetUsageResponse.usage:type_name -> nextgui.protovcs.v1.Usage
-	2,  // 12: nextgui.protovcs.v1.DeleteStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
-	1,  // 13: nextgui.protovcs.v1.TriggerMaintenanceRequest.kind:type_name -> nextgui.protovcs.v1.TriggerMaintenanceRequest.Kind
-	5,  // 14: nextgui.protovcs.v1.StoreAdminService.CreateStore:input_type -> nextgui.protovcs.v1.CreateStoreRequest
-	7,  // 15: nextgui.protovcs.v1.StoreAdminService.GetStore:input_type -> nextgui.protovcs.v1.GetStoreRequest
-	9,  // 16: nextgui.protovcs.v1.StoreAdminService.ListStores:input_type -> nextgui.protovcs.v1.ListStoresRequest
-	11, // 17: nextgui.protovcs.v1.StoreAdminService.SetQuota:input_type -> nextgui.protovcs.v1.SetQuotaRequest
-	13, // 18: nextgui.protovcs.v1.StoreAdminService.GetUsage:input_type -> nextgui.protovcs.v1.GetUsageRequest
-	15, // 19: nextgui.protovcs.v1.StoreAdminService.DeleteStore:input_type -> nextgui.protovcs.v1.DeleteStoreRequest
-	17, // 20: nextgui.protovcs.v1.StoreAdminService.TriggerMaintenance:input_type -> nextgui.protovcs.v1.TriggerMaintenanceRequest
-	6,  // 21: nextgui.protovcs.v1.StoreAdminService.CreateStore:output_type -> nextgui.protovcs.v1.CreateStoreResponse
-	8,  // 22: nextgui.protovcs.v1.StoreAdminService.GetStore:output_type -> nextgui.protovcs.v1.GetStoreResponse
-	10, // 23: nextgui.protovcs.v1.StoreAdminService.ListStores:output_type -> nextgui.protovcs.v1.ListStoresResponse
-	12, // 24: nextgui.protovcs.v1.StoreAdminService.SetQuota:output_type -> nextgui.protovcs.v1.SetQuotaResponse
-	14, // 25: nextgui.protovcs.v1.StoreAdminService.GetUsage:output_type -> nextgui.protovcs.v1.GetUsageResponse
-	16, // 26: nextgui.protovcs.v1.StoreAdminService.DeleteStore:output_type -> nextgui.protovcs.v1.DeleteStoreResponse
-	18, // 27: nextgui.protovcs.v1.StoreAdminService.TriggerMaintenance:output_type -> nextgui.protovcs.v1.TriggerMaintenanceResponse
-	21, // [21:28] is the sub-list for method output_type
-	14, // [14:21] is the sub-list for method input_type
-	14, // [14:14] is the sub-list for extension type_name
-	14, // [14:14] is the sub-list for extension extendee
-	0,  // [0:14] is the sub-list for field type_name
+	21, // 4: nextgui.protovcs.v1.Store.deleted_at:type_name -> google.protobuf.Timestamp
+	3,  // 5: nextgui.protovcs.v1.CreateStoreRequest.quota:type_name -> nextgui.protovcs.v1.Quota
+	2,  // 6: nextgui.protovcs.v1.CreateStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
+	2,  // 7: nextgui.protovcs.v1.GetStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
+	0,  // 8: nextgui.protovcs.v1.ListStoresRequest.state:type_name -> nextgui.protovcs.v1.Store.State
+	2,  // 9: nextgui.protovcs.v1.ListStoresResponse.stores:type_name -> nextgui.protovcs.v1.Store
+	3,  // 10: nextgui.protovcs.v1.SetQuotaRequest.quota:type_name -> nextgui.protovcs.v1.Quota
+	2,  // 11: nextgui.protovcs.v1.SetQuotaResponse.store:type_name -> nextgui.protovcs.v1.Store
+	4,  // 12: nextgui.protovcs.v1.GetUsageResponse.usage:type_name -> nextgui.protovcs.v1.Usage
+	2,  // 13: nextgui.protovcs.v1.DeleteStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
+	2,  // 14: nextgui.protovcs.v1.RestoreStoreResponse.store:type_name -> nextgui.protovcs.v1.Store
+	1,  // 15: nextgui.protovcs.v1.TriggerMaintenanceRequest.kind:type_name -> nextgui.protovcs.v1.TriggerMaintenanceRequest.Kind
+	5,  // 16: nextgui.protovcs.v1.StoreAdminService.CreateStore:input_type -> nextgui.protovcs.v1.CreateStoreRequest
+	7,  // 17: nextgui.protovcs.v1.StoreAdminService.GetStore:input_type -> nextgui.protovcs.v1.GetStoreRequest
+	9,  // 18: nextgui.protovcs.v1.StoreAdminService.ListStores:input_type -> nextgui.protovcs.v1.ListStoresRequest
+	11, // 19: nextgui.protovcs.v1.StoreAdminService.SetQuota:input_type -> nextgui.protovcs.v1.SetQuotaRequest
+	13, // 20: nextgui.protovcs.v1.StoreAdminService.GetUsage:input_type -> nextgui.protovcs.v1.GetUsageRequest
+	15, // 21: nextgui.protovcs.v1.StoreAdminService.DeleteStore:input_type -> nextgui.protovcs.v1.DeleteStoreRequest
+	17, // 22: nextgui.protovcs.v1.StoreAdminService.RestoreStore:input_type -> nextgui.protovcs.v1.RestoreStoreRequest
+	19, // 23: nextgui.protovcs.v1.StoreAdminService.TriggerMaintenance:input_type -> nextgui.protovcs.v1.TriggerMaintenanceRequest
+	6,  // 24: nextgui.protovcs.v1.StoreAdminService.CreateStore:output_type -> nextgui.protovcs.v1.CreateStoreResponse
+	8,  // 25: nextgui.protovcs.v1.StoreAdminService.GetStore:output_type -> nextgui.protovcs.v1.GetStoreResponse
+	10, // 26: nextgui.protovcs.v1.StoreAdminService.ListStores:output_type -> nextgui.protovcs.v1.ListStoresResponse
+	12, // 27: nextgui.protovcs.v1.StoreAdminService.SetQuota:output_type -> nextgui.protovcs.v1.SetQuotaResponse
+	14, // 28: nextgui.protovcs.v1.StoreAdminService.GetUsage:output_type -> nextgui.protovcs.v1.GetUsageResponse
+	16, // 29: nextgui.protovcs.v1.StoreAdminService.DeleteStore:output_type -> nextgui.protovcs.v1.DeleteStoreResponse
+	18, // 30: nextgui.protovcs.v1.StoreAdminService.RestoreStore:output_type -> nextgui.protovcs.v1.RestoreStoreResponse
+	20, // 31: nextgui.protovcs.v1.StoreAdminService.TriggerMaintenance:output_type -> nextgui.protovcs.v1.TriggerMaintenanceResponse
+	24, // [24:32] is the sub-list for method output_type
+	16, // [16:24] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_proto_protovcs_v1_storeadminservice_proto_init() }
@@ -1265,7 +1378,7 @@ func file_proto_protovcs_v1_storeadminservice_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_protovcs_v1_storeadminservice_proto_rawDesc), len(file_proto_protovcs_v1_storeadminservice_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   17,
+			NumMessages:   19,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

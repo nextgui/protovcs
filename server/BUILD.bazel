@@ -28,6 +28,7 @@ go_test(
     name = "server_test",
     size = "small",
     srcs = [
+        "deletion_test.go",
         "endtoend_test.go",
         "guards_test.go",
         "limits_test.go",

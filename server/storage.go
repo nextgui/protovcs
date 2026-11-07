@@ -31,6 +31,10 @@ var ErrQuotaExceeded = errors.New("protovcs: store is at its limit")
 // reservation, or against one that has expired.
 var ErrNoReservation = errors.New("protovcs: no live reservation")
 
+// ErrNotRestorable is returned by RestoreStore for a store collection has
+// started purging.
+var ErrNotRestorable = errors.New("protovcs: the store can no longer be restored")
+
 // ErrSchemaTooOld is returned when a commit would write a schema version older
 // than the store already holds, or older than an operator's floor.
 //

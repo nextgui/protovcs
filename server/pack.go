@@ -211,7 +211,7 @@ func (s *Server) packStore(ctx context.Context, storeID string) (PackResult, err
 	if err != nil {
 		return PackResult{}, err
 	}
-	if store.GetState() == pb.Store_STATE_DELETING {
+	if s := store.GetState(); s == pb.Store_STATE_DELETING || s == pb.Store_STATE_PURGING {
 		return PackResult{}, packer.DropPacks(ctx, storeID)
 	}
 	return packer.Pack(ctx, storeID, s.packPolicy(store))

@@ -204,6 +204,7 @@ var AdminAccess = map[string]pb.Access{
 	"SetQuota":           pb.Access_ACCESS_ADMIN,
 	"GetUsage":           pb.Access_ACCESS_READ,
 	"DeleteStore":        pb.Access_ACCESS_ADMIN,
+	"RestoreStore":       pb.Access_ACCESS_ADMIN,
 	"TriggerMaintenance": pb.Access_ACCESS_ADMIN,
 }
 
@@ -248,6 +249,10 @@ func (h *AdminHandler) GetUsage(ctx context.Context, req *connect.Request[pb.Get
 
 func (h *AdminHandler) DeleteStore(ctx context.Context, req *connect.Request[pb.DeleteStoreRequest]) (*connect.Response[pb.DeleteStoreResponse], error) {
 	return adminUnary(h, ctx, req, req.Msg.GetStoreId(), h.admin.DeleteStore)
+}
+
+func (h *AdminHandler) RestoreStore(ctx context.Context, req *connect.Request[pb.RestoreStoreRequest]) (*connect.Response[pb.RestoreStoreResponse], error) {
+	return adminUnary(h, ctx, req, req.Msg.GetStoreId(), h.admin.RestoreStore)
 }
 
 func (h *AdminHandler) TriggerMaintenance(ctx context.Context, req *connect.Request[pb.TriggerMaintenanceRequest]) (*connect.Response[pb.TriggerMaintenanceResponse], error) {

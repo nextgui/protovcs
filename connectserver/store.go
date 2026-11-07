@@ -62,6 +62,8 @@ func asConnect(err error) error {
 		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, server.ErrSchemaTooOld):
 		return connect.NewError(connect.CodeFailedPrecondition, err)
+	case errors.Is(err, server.ErrNotRestorable):
+		return connect.NewError(connect.CodeFailedPrecondition, err)
 	case errors.Is(err, protovcs.ErrRaceLost):
 		return connect.NewError(connect.CodeAborted, err)
 	case errors.Is(err, protovcs.ErrNotFastForward):
