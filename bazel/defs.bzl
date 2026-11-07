@@ -129,10 +129,10 @@ def protovcs_layout_go(name, src, protos, locks, go_package, importpath, srcs = 
         importpath = importpath,
         visibility = visibility,
         deps = deps + [
-            "//:protovcs",
-            "//proto/protovcs/v1",
-            "@org_golang_google_protobuf//encoding/prototext",
-            "@org_golang_google_protobuf//proto",
-            "@org_golang_google_protobuf//reflect/protoreflect",
+            Label("//:protovcs"),
+            Label("//proto/protovcs/v1"),
+            Label("@org_golang_google_protobuf//encoding/prototext"),
+            Label("@org_golang_google_protobuf//proto"),
+            Label("@org_golang_google_protobuf//reflect/protoreflect"),
         ],
     )
