@@ -49,7 +49,7 @@ const maxNodeEntries = 65536
 func BuildManifest(s Sealer, items []ItemRef) ([]ManifestChunk, error) {
 	sorted := make([]ItemRef, len(items))
 	copy(sorted, items)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Key < sorted[j].Key })
+	sort.Slice(sorted, func(i, j int) bool { return keyLess(sorted[i].Key, sorted[j].Key) })
 
 	for i := 1; i < len(sorted); i++ {
 		if sorted[i].Key == sorted[i-1].Key {
@@ -365,7 +365,45 @@ func findEntry(node *pb.ManifestNode, segment string) *pb.ManifestNode_Entry {
 	if i < len(entries) && entries[i].GetSegment() == segment {
 		return entries[i]
 	}
+	// Versions written before keyLess sorted a node by whole item key, which
+	// puts a segment such as "a-b" before "a" when both have children. The
+	// binary search misses there, so a node in that order is searched in full.
+	for _, e := range entries {
+		if e.GetSegment() == segment {
+			return e
+		}
+	}
 	return nil
+}
+
+// keyLess orders item keys one segment at a time, which is the order a node's
+// entries are kept in. Comparing whole keys is not the same: "/" sorts above
+// "-", ".", "%" and others, so "x/a-b/1" would come before "x/a/1" while the
+// segment "a" comes before "a-b".
+func keyLess(a, b ItemKey) bool {
+	sa, sb := string(a), string(b)
+	for i := 0; i < len(sa) && i < len(sb); i++ {
+		ca, cb := sa[i], sb[i]
+		if ca == cb {
+			continue
+		}
+		if ca == '/' {
+			return true
+		}
+		if cb == '/' {
+			return false
+		}
+		return ca < cb
+	}
+	return len(sa) < len(sb)
+}
+
+// sortEntries puts a node's entries in segment order. A node from a version
+// written before keyLess may not be, and an update keeps it sorted from here.
+func sortEntries(node *pb.ManifestNode) {
+	sort.SliceStable(node.Entries, func(i, j int) bool {
+		return node.Entries[i].GetSegment() < node.Entries[j].GetSegment()
+	})
 }
 
 // segmentAt returns one segment of an item key. The root item's key is empty
@@ -534,6 +572,7 @@ func UpdateManifest(s Sealer, oldRoot ChunkID, changes map[ItemKey]*ItemRef,
 			return nil, err
 		}
 		n := proto.Clone(got).(*pb.ManifestNode)
+		sortEntries(n)
 		loaded[prefix] = n
 		return n, nil
 	}
