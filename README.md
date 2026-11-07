@@ -219,6 +219,18 @@ protovcs_layout_go(
 
 Messages are buffa `DynamicMessage`s, described by a descriptor pool the caller supplies, where the Go client uses protoreflect. The crates aren't on crates.io yet. Depend on them by git.
 
+`rust/` is also a Bazel module of its own, `protovcs_rust`, so the Go module never needs Rust. It builds the crates at the versions in `rust/Cargo.lock`:
+
+```starlark
+bazel_dep(name = "protovcs_rust")
+git_override(
+    module_name = "protovcs_rust",
+    remote = "https://github.com/nextgui/protovcs.git",
+    commit = "...",
+    strip_prefix = "rust",
+)
+```
+
 After changing the Go client in a way that changes its bytes, rewrite the vectors:
 
 ```sh

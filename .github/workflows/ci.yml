@@ -57,6 +57,24 @@ jobs:
       - name: idbcache in Chrome
         run: GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/
 
+  # The Rust client's own Bazel module in rust/, which the root module does
+  # not load. It builds the crates from rust/Cargo.lock and runs their tests.
+  rust-bazel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-rust-${{ runner.os }}-${{ hashFiles('rust/.bazelversion', 'rust/MODULE.bazel', 'rust/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            bazel-rust-${{ runner.os }}-${{ hashFiles('rust/.bazelversion', 'rust/MODULE.bazel', 'rust/Cargo.lock') }}-
+            bazel-rust-${{ runner.os }}-
+      - name: bazel test //... in rust/
+        working-directory: rust
+        run: bazelisk test --disk_cache="$HOME/.cache/bazel-disk" //...
+
   # The Rust client in rust/, built with Cargo. Its tests reproduce the golden
   # vectors in testdata/golden/, which the go and bazel jobs keep current.
   rust:

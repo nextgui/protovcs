@@ -1,0 +1,65 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+rust_library(
+    name = "protovcs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//proto:protovcs_proto"],
+)
+
+rust_test(
+    name = "protovcs_unit_test",
+    size = "small",
+    crate = ":protovcs",
+)
+
+_TEST_DATA = [
+    "@protovcs//:testdata/golden/vectors.json",
+    "@protovcs//proto/protovcs/testpb:testpb.proto",
+    "@protovcs//proto/protovcs/v1:protos",
+]
+
+_TEST_ENV = {"PROTOVCS_GOLDEN_VECTORS": "$(rootpath @protovcs//:testdata/golden/vectors.json)"}
+
+_TEST_DEPS = all_crate_deps(
+    normal = True,
+    normal_dev = True,
+) + [
+    ":protovcs",
+    "//memtransport:protovcs_memtransport",
+]
+
+# Reproduces, byte for byte, the vectors the Go client writes.
+rust_test(
+    name = "golden_test",
+    size = "small",
+    srcs = [
+        "tests/golden_test.rs",
+        "tests/support.rs",
+    ],
+    crate_root = "tests/golden_test.rs",
+    data = _TEST_DATA,
+    edition = "2024",
+    env = _TEST_ENV,
+    deps = _TEST_DEPS,
+)
+
+# The store's behaviour over the in-memory server.
+rust_test(
+    name = "store_test",
+    size = "small",
+    srcs = [
+        "tests/store_test.rs",
+        "tests/support.rs",
+    ],
+    crate_root = "tests/store_test.rs",
+    data = _TEST_DATA,
+    edition = "2024",
+    env = _TEST_ENV,
+    deps = _TEST_DEPS,
+)

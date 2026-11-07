@@ -1,2 +1,3 @@
-# Cargo builds the Rust client here, and its output holds no Bazel packages.
-rust/target
+# A Bazel module of its own, so building the Go module never needs Rust.
+# See rust/MODULE.bazel.
+rust

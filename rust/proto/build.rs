@@ -1,7 +1,9 @@
 //! Generates the protovcs protos from `../../proto`, the copy the Go client
 //! is generated from.
 //!
-//! protox compiles them, so building needs no `protoc`. Two descriptor sets
+//! protox compiles them, so building needs no `protoc`. Bazel names
+//! `proto/protovcs/v1/store.proto` in `PROTOVCS_STORE_PROTO`, and the
+//! repository root is found from it. Two descriptor sets
 //! are written: one with source info, which the code generator turns into doc
 //! comments, and one without, which the client compiles in.
 
@@ -20,8 +22,14 @@ const FILES: &[&str] = &[
 ];
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let manifest = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?);
-    let root = manifest.join("../..");
+    let root = match std::env::var_os("PROTOVCS_STORE_PROTO") {
+        Some(store) => PathBuf::from(store)
+            .ancestors()
+            .nth(4)
+            .ok_or("PROTOVCS_STORE_PROTO is not proto/protovcs/v1/store.proto")?
+            .to_path_buf(),
+        None => PathBuf::from(std::env::var("CARGO_MANIFEST_DIR")?).join("../.."),
+    };
     let out = PathBuf::from(std::env::var("OUT_DIR")?);
     for f in FILES {
         println!("cargo:rerun-if-changed={}", root.join(f).display());

@@ -25,6 +25,15 @@ proto_library(
     ],
 )
 
+# The sources, for the Rust client's build script in rust/proto, which
+# compiles them itself.
+filegroup(
+    name = "protos",
+    srcs = glob(["*.proto"]),
+)
+
+exports_files(glob(["*.proto"]))
+
 go_proto_library(
     name = "protovcs_go_proto",
     compilers = [

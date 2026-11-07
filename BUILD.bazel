@@ -82,7 +82,11 @@ go_test(
 )
 
 
-exports_files(["go.mod"])
+exports_files([
+    "go.mod",
+    # The Rust client's tests in rust/ reproduce it.
+    "testdata/golden/vectors.json",
+])
 
 # Golden vectors for the Rust client in rust/, which its tests must reproduce
 # byte for byte. This test writes them, and update_golden's test fails when the

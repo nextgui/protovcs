@@ -1,0 +1,14 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+# Empty outside wasm32.
+rust_library(
+    name = "protovcs_idbcache",
+    srcs = ["src/lib.rs"],
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//protovcs"],
+)

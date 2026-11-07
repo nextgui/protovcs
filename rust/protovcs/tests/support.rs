@@ -3,6 +3,7 @@
 
 #![allow(dead_code)]
 
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use buffa::Message;
@@ -12,11 +13,19 @@ use protovcs::{Compiled, DescriptorPool, DynamicMessage, Entropy};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-/// The vectors the Go client wrote.
-pub static VECTORS: &str = include_str!(concat!(
-    env!("CARGO_MANIFEST_DIR"),
-    "/../../testdata/golden/vectors.json"
-));
+/// The repository root, which holds the protos and the vectors. Bazel names
+/// the vectors in `PROTOVCS_GOLDEN_VECTORS`; under Cargo the root is two
+/// directories above this crate.
+fn repo_root() -> PathBuf {
+    match std::env::var_os("PROTOVCS_GOLDEN_VECTORS") {
+        Some(v) => Path::new(&v)
+            .ancestors()
+            .nth(3)
+            .expect("the vectors are at testdata/golden/vectors.json")
+            .to_path_buf(),
+        None => Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."),
+    }
+}
 
 pub const STORE: &str = "nextgui.protovcs.testpb.Store";
 
@@ -30,8 +39,7 @@ pub fn pool() -> Arc<DescriptorPool> {
 /// The testpb protos and everything they import, compiled from the
 /// repository's `proto/` directory.
 fn testpb_descriptors() -> Vec<u8> {
-    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/../..");
-    protox::Compiler::new([root])
+    protox::Compiler::new([repo_root()])
         .expect("the repository root is readable")
         .include_imports(true)
         .open_files(["proto/protovcs/testpb/testpb.proto"])
@@ -41,7 +49,12 @@ fn testpb_descriptors() -> Vec<u8> {
 
 pub fn vectors() -> &'static Value {
     static V: OnceLock<Value> = OnceLock::new();
-    V.get_or_init(|| serde_json::from_str(VECTORS).expect("the vectors are JSON"))
+    V.get_or_init(|| {
+        let path = repo_root().join("testdata/golden/vectors.json");
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
+        serde_json::from_str(&text).expect("the vectors are JSON")
+    })
 }
 
 pub fn hex(v: &Value) -> Vec<u8> {
