@@ -103,6 +103,10 @@ func run(logger *slog.Logger) error {
 		Addr:              *addr,
 		Handler:           connectserver.Browsable(mux, allowed),
 		ReadHeaderTimeout: 10 * time.Second,
+		// Long enough for a slow client to upload the largest request. No
+		// write timeout: a ref watch is a response that never ends.
+		ReadTimeout: 10 * time.Minute,
+		IdleTimeout: 2 * time.Minute,
 	}
 	go func() {
 		<-ctx.Done()

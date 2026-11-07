@@ -2,6 +2,8 @@ package objectstorage
 
 import (
 	"bufio"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log"
@@ -14,6 +16,16 @@ import (
 
 // lockName is the file whose existence claims a directory.
 const lockName = ".protovcs-lock"
+
+// processToken tells this process's locks from those of an earlier process
+// that had the same pid, as a restarted container often does.
+var processToken = func() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		panic("objectstorage: reading randomness for the lock token: " + err.Error())
+	}
+	return hex.EncodeToString(b)
+}()
 
 // claimDir creates the lock file that claims dir for this process.
 //
@@ -28,7 +40,7 @@ func claimDir(dir string) (*os.File, error) {
 		lock, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 		if err == nil {
 			host, _ := os.Hostname()
-			fmt.Fprintf(lock, "pid %d\nhost %s\n", os.Getpid(), host)
+			fmt.Fprintf(lock, "pid %d\nhost %s\ntoken %s\n", os.Getpid(), host, processToken)
 			return lock, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
@@ -49,8 +61,9 @@ func claimDir(dir string) (*os.File, error) {
 
 // lockOwner is what a lock file says about the process that wrote it.
 type lockOwner struct {
-	pid  int
-	host string
+	pid   int
+	host  string
+	token string
 }
 
 func readLockOwner(path string) (lockOwner, error) {
@@ -69,6 +82,8 @@ func readLockOwner(path string) (lockOwner, error) {
 			o.pid, _ = strconv.Atoi(value)
 		case "host":
 			o.host = value
+		case "token":
+			o.token = value
 		}
 	}
 	return o, s.Err()
@@ -118,10 +133,14 @@ func removeStaleLock(dir, path string) (lockOwner, bool, error) {
 // from another host is not stale, because a pid means nothing off the machine
 // that issued it. A lock without a host line was written before hosts were
 // recorded, by a process on this machine. A pid equal to this process's is
-// running.
+// this process only if the lock carries this process's token; otherwise an
+// earlier process with the same pid wrote it and has exited.
 func (o lockOwner) stale() bool {
-	if o.pid <= 0 || o.pid == os.Getpid() {
+	if o.pid <= 0 {
 		return false
+	}
+	if o.pid == os.Getpid() {
+		return o.token != processToken
 	}
 	if host, err := os.Hostname(); o.host != "" && (err != nil || o.host != host) {
 		return false

@@ -1,7 +1,10 @@
 package connectserver
 
 import (
+	"compress/gzip"
 	"context"
+	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -26,15 +29,72 @@ const DefaultMaxRequestBytes = 8 << 20
 // chunk unless the store's quota sets max_chunk_bytes.
 const MaxPutChunksBytes = 32 << 20
 
-// readLimits sets each method's request limit.
+// readLimits sets each method's request limit, before and after
+// decompression.
+//
+// Connect's own limit stops at the limit, then inflates the rest of the
+// message to report its size. Gzip expands about a thousand to one, so a small
+// request could cost a thousand times the limit in CPU before any access
+// check. The gzip decompressor registered here fails at the limit instead.
 func readLimits() connect.HandlerOption {
 	return connect.WithConditionalHandlerOptions(func(spec connect.Spec) []connect.HandlerOption {
 		max := DefaultMaxRequestBytes
 		if spec.Procedure == pb.StoreServicePutChunksProcedure {
 			max = MaxPutChunksBytes
 		}
-		return []connect.HandlerOption{connect.WithReadMaxBytes(max)}
+		return []connect.HandlerOption{
+			connect.WithReadMaxBytes(max),
+			// Unregistered first, because registering a name again lists it
+			// twice in what the handler says it accepts.
+			connect.WithCompression("gzip", nil, nil),
+			connect.WithCompression("gzip",
+				func() connect.Decompressor { return &limitedGzip{procedure: spec.Procedure, max: int64(max)} },
+				func() connect.Compressor { return gzip.NewWriter(io.Discard) },
+			),
+		}
 	})
+}
+
+// limitedGzip is a gzip decompressor that fails once a message inflates past
+// max bytes.
+type limitedGzip struct {
+	procedure string
+	max       int64
+	read      int64
+	r         *gzip.Reader
+}
+
+func (d *limitedGzip) Read(p []byte) (int, error) {
+	if d.r == nil {
+		return 0, io.EOF
+	}
+	n, err := d.r.Read(p)
+	d.read += int64(n)
+	if d.read > d.max {
+		return n, connect.NewError(connect.CodeResourceExhausted,
+			fmt.Errorf("a request message to %s inflates past its %d byte limit", d.procedure, d.max))
+	}
+	return n, err
+}
+
+func (d *limitedGzip) Close() error {
+	if d.r == nil {
+		return nil
+	}
+	return d.r.Close()
+}
+
+func (d *limitedGzip) Reset(r io.Reader) error {
+	d.read = 0
+	if d.r == nil {
+		g, err := gzip.NewReader(r)
+		if err != nil {
+			return err
+		}
+		d.r = g
+		return nil
+	}
+	return d.r.Reset(r)
 }
 
 // Mount serves both services on mux, checking each request with auth.
