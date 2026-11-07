@@ -776,4 +776,3 @@ async fn non_fast_forward_update_ref_returns_not_fast_forward() {
         "expected NotFastForward, got {err:?}"
     );
 }
-

@@ -341,4 +341,3 @@ func TestPutChunksWithDuplicateIDsCountsUniqueStoredChunks(t *testing.T) {
 			resp.Msg.GetStored(), resp.Msg.GetAlreadyPresent())
 	}
 }
-
