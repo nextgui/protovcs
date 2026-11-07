@@ -276,4 +276,3 @@ func TestRewriteAlsoRewritesACommitThatLandsWhileItRuns(t *testing.T) {
 		}
 	}
 }
-

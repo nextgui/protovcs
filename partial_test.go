@@ -508,4 +508,3 @@ func TestPutAllowsReplacingAClearedItemWithAParentOrChildKey(t *testing.T) {
 		t.Fatalf("Commit after replacing directory with item failed: %v", err)
 	}
 }
-

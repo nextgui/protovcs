@@ -297,4 +297,3 @@ func splitPath(prefix string) []string {
 	}
 	return append(out, prefix[start:])
 }
-
