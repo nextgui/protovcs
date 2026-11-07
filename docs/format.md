@@ -551,18 +551,18 @@ These rules have no vector yet:
   no vectors for a tampered chunk, a chunk opened under the wrong id, an unknown
   version byte, a short envelope, or a commit whose id does not match its
   record.
-- Manifest entries whose segments are prefixes of each other, covered in the
-  next section.
 
-## Known divergence
+## Manifests written in an older order
 
-The rule above is that manifest entries are sorted by segment. When the Go
-implementation builds a whole tree, it sorts items by full key and takes
-segments in that order. The two orders differ when one segment is a prefix of a
-sibling and the longer sibling continues with a byte below `/` (0x2F). For keys
-`x/a/1` and `x/a-b/1`, the full build writes the node at `x` with entries
-`a-b, a`, because `-` (0x2D) sorts before `/`. Rebuilding only changed paths
-writes `a, a-b`, so the two builds name the same data differently. A lookup
-binary-searches entries by segment and does not find `x/a/1` in the full
-build's tree. An implementation should sort entries by segment. Escaped values
-are affected, because `%` (0x25) is below `/`.
+Manifest entries are sorted by segment, and a writer must sort them that way.
+The vectors cover the case that matters: the golden store holds the groups
+`gamma` and `gamma%`, whose escaped segment `gamma%25` sorts after `gamma` by
+segment and before it by whole key.
+
+Versions written before this rule was enforced can hold a node sorted by whole
+item key instead. The two orders differ when one segment is a prefix of a
+sibling, the longer sibling continues with a byte below `/` (0x2F), and both
+have children: for `x/a/1` and `x/a-b/1`, such a node holds `a-b` before `a`.
+A reader that binary-searches by segment and misses must therefore search the
+node in full before concluding an entry is absent. A writer that changes such a
+node sorts its entries by segment first.
