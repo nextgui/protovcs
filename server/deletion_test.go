@@ -218,4 +218,3 @@ func TestAPurgeFinishesWhenTheHistoryCannotBeRead(t *testing.T) {
 		t.Fatal("a purge left a chunk behind")
 	}
 }
-

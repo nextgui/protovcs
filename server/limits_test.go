@@ -422,4 +422,3 @@ func TestBeginWriteRefundsQuotaWhenPutReservationFails(t *testing.T) {
 		t.Fatalf("failed BeginWrite left %d reserved bytes and %d reserved objects", u.GetReservedBytes(), u.GetReservedObjects())
 	}
 }
-
