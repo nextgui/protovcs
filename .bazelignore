@@ -1,0 +1,2 @@
+# Cargo builds the Rust client here, and its output holds no Bazel packages.
+rust/target

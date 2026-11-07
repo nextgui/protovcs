@@ -1,0 +1,25 @@
+[package]
+name = "protovcs-proto"
+description = "protovcs's protos, generated with buffa and connect-rust"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+buffa = { workspace = true, features = ["json"] }
+buffa-descriptor = { workspace = true, features = ["json", "views"] }
+buffa-types = { workspace = true, features = ["json"] }
+bytes = "1"
+connectrpc = { workspace = true, features = ["json"] }
+futures.workspace = true
+http = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[build-dependencies]
+connectrpc-build = "=0.9.0"
+prost = "0.14"
+prost-types = "0.14"
+protox.workspace = true
