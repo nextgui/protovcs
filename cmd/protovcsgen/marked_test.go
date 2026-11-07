@@ -48,3 +48,22 @@ func TestAnOptionThatIsNotABoolMessageOptionIsAnError(t *testing.T) {
 		t.Fatal("an option no descriptor set declares was accepted")
 	}
 }
+
+func TestSingular(t *testing.T) {
+	for in, want := range map[string]string{
+		"Records":   "Record",
+		"Entries":   "Entry",
+		"Statuses":  "Status",
+		"Addresses": "Address",
+		"Boxes":     "Box",
+		"Batches":   "Batch",
+		"Status":    "Status",
+		"Address":   "Address",
+		"Access":    "Access",
+	} {
+		if got := singular(in); got != want {
+			t.Errorf("singular(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+

@@ -428,6 +428,12 @@ func singular(name string) string {
 	if strings.HasSuffix(name, "ies") {
 		return name[:len(name)-3] + "y"
 	}
+	if strings.HasSuffix(name, "sses") || strings.HasSuffix(name, "uses") || strings.HasSuffix(name, "xes") || strings.HasSuffix(name, "ches") || strings.HasSuffix(name, "shes") {
+		return name[:len(name)-2]
+	}
+	if strings.HasSuffix(name, "ss") || strings.HasSuffix(name, "us") {
+		return name
+	}
 	if strings.HasSuffix(name, "s") {
 		return name[:len(name)-1]
 	}
