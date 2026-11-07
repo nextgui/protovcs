@@ -48,9 +48,21 @@ const RETRY_CAP: Duration = Duration::from_secs(1);
 /// since the Unix epoch, in UTC.
 pub type Clock = Arc<dyn Fn() -> Timestamp + Send + Sync>;
 
-/// How a store waits between attempts after losing a race. A store without
-/// one retries at once, which is fine for one writer and wasteful for many.
+/// How a store waits between attempts after losing a race. By default it is a
+/// timer that needs no particular async runtime; set one to use the
+/// application's own.
 pub type Sleep = Arc<dyn Fn(Duration) -> BoxFuture<'static, ()> + Send + Sync>;
+
+fn system_sleep() -> Sleep {
+    Arc::new(|d| {
+        let delay = futures_timer::Delay::new(d);
+        // The browser's timer is not Send. A wasm32 page is single-threaded,
+        // so the future never leaves the thread it was made on.
+        #[cfg(target_arch = "wasm32")]
+        let delay = send_wrapper::SendWrapper::new(delay);
+        Box::pin(delay)
+    })
+}
 
 fn system_clock() -> Clock {
     Arc::new(|| {
@@ -80,7 +92,7 @@ pub(crate) struct Inner {
     hint: String,
     pub(crate) chunk_cache: Option<Arc<dyn ChunkCache>>,
     clock: Clock,
-    sleep: Option<Sleep>,
+    sleep: Sleep,
     entropy: Entropy,
     descriptors: Option<FileDescriptorSet>,
     /// Where `high_water` is kept between stores, or none. See
@@ -176,7 +188,9 @@ impl StoreBuilder {
         self
     }
 
-    /// Sets where commit nonces and retry jitter come from.
+    /// Sets where commit nonces and retry jitter come from, for tests that
+    /// need them fixed. Only with the `test-util` feature.
+    #[cfg(feature = "test-util")]
     pub fn entropy(mut self, e: Entropy) -> Self {
         self.entropy = Some(e);
         self
@@ -224,7 +238,7 @@ impl StoreBuilder {
                 hint: self.hint,
                 chunk_cache: self.chunk_cache,
                 clock: self.clock.unwrap_or_else(system_clock),
-                sleep: self.sleep,
+                sleep: self.sleep.unwrap_or_else(system_sleep),
                 entropy: self.entropy.unwrap_or_else(system_entropy),
                 descriptors: self.descriptors,
                 head_marks: self.head_marks,
@@ -1082,9 +1096,7 @@ impl Store {
     }
 
     async fn backoff(&self, attempt: usize) {
-        let Some(sleep) = &self.inner.sleep else {
-            return;
-        };
+        let sleep = &self.inner.sleep;
         let window = RETRY_BASE
             .checked_mul(1 << (attempt - 1).min(20))
             .unwrap_or(RETRY_CAP)

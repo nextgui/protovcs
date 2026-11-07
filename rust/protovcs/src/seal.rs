@@ -76,6 +76,8 @@ const TAG_LEN: usize = 16;
 /// per job: one key names chunks, one encrypts them, one names branches.
 pub struct Keyring {
     name: [u8; 32],
+    // Kept only for the golden vectors; the cipher holds its own copy.
+    #[cfg(feature = "test-util")]
     chunk: [u8; 32],
     ref_key: [u8; 32],
     aead: Aes256Gcm,
@@ -90,15 +92,22 @@ impl Keyring {
     ///
     /// When `root_key` is not [`ROOT_KEY_LEN`] bytes.
     pub fn new(root_key: &[u8]) -> Result<Self> {
-        Self::with_entropy(root_key, system_entropy())
+        Self::build(root_key, system_entropy())
     }
 
-    /// [`Keyring::new`] drawing nonces from `entropy`.
+    /// [`Keyring::new`] drawing nonces from `entropy`, for tests that need
+    /// fixed nonces. A fixed nonce under a real key breaks AES-GCM, so this
+    /// exists only with the `test-util` feature.
     ///
     /// # Errors
     ///
     /// When `root_key` is not [`ROOT_KEY_LEN`] bytes.
+    #[cfg(feature = "test-util")]
     pub fn with_entropy(root_key: &[u8], entropy: Entropy) -> Result<Self> {
+        Self::build(root_key, entropy)
+    }
+
+    fn build(root_key: &[u8], entropy: Entropy) -> Result<Self> {
         if root_key.len() != ROOT_KEY_LEN {
             return Err(Error::invalid(format!(
                 "protovcs: a root key is {ROOT_KEY_LEN} bytes, got {}",
@@ -117,6 +126,7 @@ impl Keyring {
         let aead = Aes256Gcm::new_from_slice(&chunk).expect("a 32-byte key is a valid AES-256 key");
         Ok(Self {
             name: derive(LABEL_NAME),
+            #[cfg(feature = "test-util")]
             chunk,
             ref_key: derive(LABEL_REF),
             aead,
@@ -125,19 +135,23 @@ impl Keyring {
     }
 
     /// The derived naming, content and ref keys, for the golden vectors.
-    #[doc(hidden)]
+    #[cfg(feature = "test-util")]
     pub fn derived_keys(&self) -> (&[u8; 32], &[u8; 32], &[u8; 32]) {
         (&self.name, &self.chunk, &self.ref_key)
     }
 
-    /// Seals with a chosen nonce.
-    #[doc(hidden)]
+    /// Seals with a chosen nonce, for the golden vectors.
+    #[cfg(feature = "test-util")]
     pub fn seal_with_nonce(
         &self,
         id: &ChunkId,
         nonce: &[u8; NONCE_LEN],
         plaintext: &[u8],
     ) -> Vec<u8> {
+        self.seal_nonce(id, nonce, plaintext)
+    }
+
+    fn seal_nonce(&self, id: &ChunkId, nonce: &[u8; NONCE_LEN], plaintext: &[u8]) -> Vec<u8> {
         let ct = self
             .aead
             .encrypt(
@@ -170,7 +184,7 @@ impl Sealer for Keyring {
     fn seal(&self, id: &ChunkId, plaintext: &[u8]) -> Result<Vec<u8>> {
         let mut nonce = [0u8; NONCE_LEN];
         (self.entropy)(&mut nonce)?;
-        Ok(self.seal_with_nonce(id, &nonce, plaintext))
+        Ok(self.seal_nonce(id, &nonce, plaintext))
     }
 
     fn open(&self, id: &ChunkId, sealed: &[u8]) -> Result<Vec<u8>> {
