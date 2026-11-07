@@ -560,8 +560,8 @@ func (v *EverythingView) Records() []*testpb.Record {
 	return out
 }
 
-// PutRecord stages one element of "records".
-func (v *EverythingView) PutRecord(ctx context.Context, elem *testpb.Record) error {
+// PutRecords stages one element of "records".
+func (v *EverythingView) PutRecords(ctx context.Context, elem *testpb.Record) error {
 	return v.part.PutElement(ctx, "records", elem)
 }
 
@@ -578,8 +578,8 @@ func (v *EverythingView) Accounts() []*testpb.Account {
 	return out
 }
 
-// PutAccount stages one element of "accounts".
-func (v *EverythingView) PutAccount(ctx context.Context, elem *testpb.Account) error {
+// PutAccounts stages one element of "accounts".
+func (v *EverythingView) PutAccounts(ctx context.Context, elem *testpb.Account) error {
 	return v.part.PutElement(ctx, "accounts", elem)
 }
 
@@ -637,8 +637,8 @@ func (v *RecordsAndNameView) Records() []*testpb.Record {
 	return out
 }
 
-// PutRecord stages one element of "records".
-func (v *RecordsAndNameView) PutRecord(ctx context.Context, elem *testpb.Record) error {
+// PutRecords stages one element of "records".
+func (v *RecordsAndNameView) PutRecords(ctx context.Context, elem *testpb.Record) error {
 	return v.part.PutElement(ctx, "records", elem)
 }
 
