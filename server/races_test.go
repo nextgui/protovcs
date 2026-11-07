@@ -2,6 +2,8 @@ package server_test
 
 import (
 	"context"
+	"errors"
+	"math"
 	"testing"
 	"time"
 
@@ -28,12 +30,12 @@ func (h *hooked) ListChunks(ctx context.Context, storeID string) ([]protovcs.Chu
 	return h.MemStorage.ListChunks(ctx, storeID)
 }
 
-func (h *hooked) DeleteReservation(ctx context.Context, storeID, id string) error {
+func (h *hooked) TakeReservation(ctx context.Context, storeID, id string) (*server.Reservation, error) {
 	if f := h.onDeleteReservation; f != nil {
 		h.onDeleteReservation = nil
 		f(id)
 	}
-	return h.MemStorage.DeleteReservation(ctx, storeID, id)
+	return h.MemStorage.TakeReservation(ctx, storeID, id)
 }
 
 func (h *hooked) GetCondemned(ctx context.Context, storeID string) (*server.Condemned, error) {
@@ -149,3 +151,87 @@ func TestACommitCannotNameAChunkDeletedBetweenItsChecks(t *testing.T) {
 		t.Errorf("PutCommit stored %s naming chunk %s; chunk present: %v", id, x.ID, has)
 	}
 }
+
+func TestAnOverflowingReservationIsRefused(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := raceServer(t, &pb.Quota{MaxBytes: 1000, MaxBytesPerDay: 1000})
+	writeCommit(t, s, 1, chunk(1, 300))
+
+	st, _ := s.GetStore(ctx, storeID)
+	used := st.GetUsage().GetBytes()
+	huge := math.MaxUint64 - used + 1 // used + huge wraps to 0
+	if _, err := s.BeginWrite(ctx, storeID, 1, huge); !errors.Is(err, server.ErrQuotaExceeded) {
+		t.Fatalf("BeginWrite for %d bytes on a 1000-byte store returned %v, want ErrQuotaExceeded", huge, err)
+	}
+}
+
+func TestAReservationIsReleasedOnce(t *testing.T) {
+	ctx := context.Background()
+	s, h, now := raceServer(t, &pb.Quota{MaxBytes: 1000})
+
+	r1, err := s.BeginWrite(ctx, storeID, 1, 400)
+	if err != nil {
+		t.Fatal(err)
+	}
+	*now = now.Add(server.ReservationTTL + time.Minute) // r1 has expired
+	r2, err := s.BeginWrite(ctx, storeID, 1, 400)       // another writer
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// r1's writer commits just as somebody expires reservations.
+	h.onDeleteReservation = func(id string) {
+		if id == r1.ID {
+			if _, err := s.ExpireReservations(ctx, storeID); err != nil {
+				t.Errorf("ExpireReservations: %v", err)
+			}
+		}
+	}
+	if _, err := s.PutCommit(ctx, storeID, r1.ID, commitNumbered(9)); err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.GetStore(ctx, storeID)
+	if got := st.GetUsage().GetReservedBytes(); got != r2.Bytes {
+		t.Errorf("reserved bytes are %d with only r2 (%d bytes) live", got, r2.Bytes)
+	}
+}
+
+func TestARetriedCommitIsChargedOnce(t *testing.T) {
+	ctx := context.Background()
+	s, _, _ := raceServer(t, &pb.Quota{MaxCommits: 1})
+	c := commitNumbered(1)
+	if _, err := s.PutCommit(ctx, storeID, "", c); err != nil {
+		t.Fatal(err)
+	}
+	// The response was lost and the client sends the same commit again.
+	if _, err := s.PutCommit(ctx, storeID, "", c); err != nil {
+		t.Errorf("retrying the same commit failed: %v", err)
+	}
+	st, _ := s.GetStore(ctx, storeID)
+	if got := st.GetUsage().GetCommits(); got != 1 {
+		t.Errorf("one stored commit is counted %d times", got)
+	}
+}
+
+func TestReconcileKeepsAChargeMadeWhileItCounts(t *testing.T) {
+	ctx := context.Background()
+	s, h, _ := raceServer(t, &pb.Quota{MaxBytes: 1 << 20})
+	r, _ := s.BeginWrite(ctx, storeID, 1, 100)
+
+	h.onListRefs = func() { // Reconcile lists refs after chunks and commits
+		if err := s.PutChunks(ctx, storeID, r.ID, []protovcs.SealedChunk{chunk(1, 100)}); err != nil {
+			t.Errorf("PutChunks: %v", err)
+		}
+	}
+	_, after, err := s.Reconcile(ctx, storeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, _ := s.GetStore(ctx, storeID)
+	if st.GetUsage().GetBytes() != 100 {
+		t.Errorf("a 100-byte chunk is stored but usage says %d bytes (Reconcile returned %d)",
+			st.GetUsage().GetBytes(), after.GetBytes())
+	}
+}
+
+var _ = errors.Is

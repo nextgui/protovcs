@@ -442,16 +442,21 @@ func (m *MemStorage) UpdateReservation(ctx context.Context, storeID, id string, 
 	return &out, nil
 }
 
-func (m *MemStorage) DeleteReservation(ctx context.Context, storeID, id string) error {
+func (m *MemStorage) TakeReservation(ctx context.Context, storeID, id string) (*Reservation, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
 	st, err := m.state(storeID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	r, ok := st.reservations[id]
+	if !ok {
+		return nil, nil
 	}
 	delete(st.reservations, id)
-	return nil
+	taken := *r
+	return &taken, nil
 }
 
 func (m *MemStorage) ListReservations(ctx context.Context, storeID string) ([]*Reservation, error) {

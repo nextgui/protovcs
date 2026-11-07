@@ -676,12 +676,27 @@ func encodeReservation(r *server.Reservation) []byte {
 	return []byte(fmt.Sprintf("%d %d %d %d %d", r.Chunks, r.Bytes, r.UsedChunks, r.UsedBytes, r.ExpiresUnix))
 }
 
-func (s *Storage) DeleteReservation(ctx context.Context, storeID, id string) error {
+// TakeReservation is a delete conditional on the generation read, so of two
+// callers racing on one reservation only one deletes it.
+func (s *Storage) TakeReservation(ctx context.Context, storeID, id string) (*server.Reservation, error) {
 	key, err := reservationKey(storeID, id)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return s.bucket.Delete(ctx, key)
+	for attempt := 0; attempt < updateAttempts; attempt++ {
+		r, gen, err := s.readReservation(ctx, storeID, id)
+		if err != nil || r == nil {
+			return nil, err
+		}
+		err = s.bucket.DeleteIfGeneration(ctx, key, gen)
+		if err == nil {
+			return r, nil
+		}
+		if !errors.Is(err, ErrGenerationMismatch) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("protovcs: gave up taking reservation %s after %d attempts", id, updateAttempts)
 }
 
 func (s *Storage) ListReservations(ctx context.Context, storeID string) ([]*server.Reservation, error) {

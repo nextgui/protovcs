@@ -119,7 +119,10 @@ type Storage interface {
 	// reservation unchanged and is returned as is. A missing reservation is
 	// ErrNoReservation.
 	UpdateReservation(ctx context.Context, storeID, id string, fn func(*Reservation) error) (*Reservation, error)
-	DeleteReservation(ctx context.Context, storeID, id string) error
+	// TakeReservation removes a reservation and returns it, or returns nil if
+	// it is already gone. Of two calls racing on one reservation, exactly one
+	// gets it, so only one gives its quota back.
+	TakeReservation(ctx context.Context, storeID, id string) (*Reservation, error)
 	ListReservations(ctx context.Context, storeID string) ([]*Reservation, error)
 
 	// GetCondemned returns the chunks collection has marked for deletion. A
