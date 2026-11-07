@@ -1,0 +1,16 @@
+[package]
+name = "protovcs-memtransport"
+description = "An in-memory protovcs store served over Connect, for tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+connectrpc.workspace = true
+futures.workspace = true
+protovcs.workspace = true
+
+[lints]
+workspace = true

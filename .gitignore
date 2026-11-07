@@ -1,3 +1,6 @@
 /bazel-*
 # Versions are pinned in MODULE.bazel and go.sum; the lockfile is not kept.
 /MODULE.bazel.lock
+/rust/target
+/rust/bazel-*
+/rust/MODULE.bazel.lock

@@ -13,6 +13,9 @@ proto_library(
     deps = ["//proto/protovcs/v1:protovcs_proto"],
 )
 
+# The Rust client's tests in rust/ compile it at run time.
+exports_files(["testpb.proto"])
+
 go_proto_library(
     name = "testpb_go_proto",
     importpath = "github.com/nextgui/protovcs/proto/protovcs/testpb",

@@ -1,0 +1,24 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+rust_library(
+    name = "protovcs_memtransport",
+    srcs = ["src/lib.rs"],
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//protovcs"],
+)
+
+# Over protovcs with test-util, for the golden test, which needs one copy of
+# the crate throughout.
+rust_library(
+    name = "protovcs_memtransport_test_util",
+    testonly = True,
+    srcs = ["src/lib.rs"],
+    crate_name = "protovcs_memtransport",
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//protovcs:protovcs_test_util"],
+)

@@ -1,0 +1,80 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_library", "rust_test")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+rust_library(
+    name = "protovcs",
+    srcs = glob(["src/**/*.rs"]),
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//proto:protovcs_proto"],
+)
+
+# The same crate with the test-util feature, for the golden vectors, which fix
+# keys and nonces. Test only: a fixed nonce breaks AES-GCM.
+rust_library(
+    name = "protovcs_test_util",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["test-util"],
+    crate_name = "protovcs",
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//proto:protovcs_proto"],
+)
+
+rust_test(
+    name = "protovcs_unit_test",
+    size = "small",
+    crate = ":protovcs",
+)
+
+_TEST_DATA = [
+    "@protovcs//:testdata/golden/vectors.json",
+    "@protovcs//proto/protovcs/testpb:testpb.proto",
+    "@protovcs//proto/protovcs/v1:protos",
+]
+
+_TEST_ENV = {"PROTOVCS_GOLDEN_VECTORS": "$(rootpath @protovcs//:testdata/golden/vectors.json)"}
+
+_CRATE_DEPS = all_crate_deps(
+    normal = True,
+    normal_dev = True,
+)
+
+# Reproduces, byte for byte, the vectors the Go client writes.
+rust_test(
+    name = "golden_test",
+    size = "small",
+    srcs = [
+        "tests/golden_test.rs",
+        "tests/support.rs",
+    ],
+    crate_root = "tests/golden_test.rs",
+    data = _TEST_DATA,
+    edition = "2024",
+    env = _TEST_ENV,
+    deps = _CRATE_DEPS + [
+        ":protovcs_test_util",
+        "//memtransport:protovcs_memtransport_test_util",
+    ],
+)
+
+# The store's behaviour over the in-memory server.
+rust_test(
+    name = "store_test",
+    size = "small",
+    srcs = [
+        "tests/store_test.rs",
+        "tests/support.rs",
+    ],
+    crate_root = "tests/store_test.rs",
+    data = _TEST_DATA,
+    edition = "2024",
+    env = _TEST_ENV,
+    deps = _CRATE_DEPS + [
+        ":protovcs",
+        "//memtransport:protovcs_memtransport",
+    ],
+)

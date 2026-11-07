@@ -1,0 +1,30 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//cargo:defs.bzl", "cargo_build_script")
+load("@rules_rust//rust:defs.bzl", "rust_library")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["Cargo.toml"])
+
+# build.rs compiles the protos from the Go module, which Bazel holds as
+# @protovcs.
+cargo_build_script(
+    name = "build_script",
+    srcs = ["build.rs"],
+    build_script_env = {
+        "PROTOVCS_STORE_PROTO": "$(execpath @protovcs//proto/protovcs/v1:store.proto)",
+    },
+    data = [
+        "@protovcs//proto/protovcs/v1:protos",
+        "@protovcs//proto/protovcs/v1:store.proto",
+    ],
+    edition = "2024",
+    deps = all_crate_deps(build = True),
+)
+
+rust_library(
+    name = "protovcs_proto",
+    srcs = ["src/lib.rs"],
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + [":build_script"],
+)

@@ -1,0 +1,56 @@
+# The Rust client as a Bazel module of its own, so the Go module at the
+# repository root never needs Rust. Depend on it with
+#
+#   bazel_dep(name = "protovcs_rust")
+#   git_override(module_name = "protovcs_rust", remote = ..., commit = ...,
+#                strip_prefix = "rust")
+#
+# Crate versions come from Cargo.lock, so Cargo and Bazel build the same ones.
+
+module(name = "protovcs_rust", version = "0.0.1")
+
+# The protos and the golden vectors. The override applies only when this is
+# the root module, as it is when building here.
+bazel_dep(name = "protovcs", version = "0.1.0")
+local_path_override(
+    module_name = "protovcs",
+    path = "..",
+)
+
+# protovcs's own git_override, which Bazel reads only from the root module.
+bazel_dep(name = "stableproto")
+git_override(
+    module_name = "stableproto",
+    commit = "a6c081b7fbb70e910e2d21f467061a1c302938ba",
+    remote = "https://github.com/nextgui/stableproto.git",
+)
+
+bazel_dep(name = "rules_rust", version = "0.71.3")
+
+rust = use_extension("@rules_rust//rust:extensions.bzl", "rust")
+rust.toolchain(
+    edition = "2024",
+    versions = ["1.99.1"],
+)
+use_repo(rust, "rust_toolchains")
+
+register_toolchains("@rust_toolchains//:all")
+
+crate = use_extension("@rules_rust//crate_universe:extensions.bzl", "crate")
+crate.from_cargo(
+    name = "crates",
+    cargo_lockfile = "//:Cargo.lock",
+    manifests = [
+        "//:Cargo.toml",
+        "//idbcache:Cargo.toml",
+        "//memtransport:Cargo.toml",
+        "//proto:Cargo.toml",
+        "//protovcs:Cargo.toml",
+    ],
+    supported_platform_triples = [
+        "aarch64-apple-darwin",
+        "x86_64-unknown-linux-gnu",
+        "wasm32-unknown-unknown",
+    ],
+)
+use_repo(crate, "crates")
