@@ -50,5 +50,9 @@ jobs:
           go-version: "1.25"
       - name: Install wasmbrowsertest
         run: go install github.com/agnivade/wasmbrowsertest@v0.11.0
+      # Ubuntu 24.04 restricts unprivileged user namespaces, which Chrome's
+      # sandbox needs, so Chrome exits before the test starts.
+      - name: Allow Chrome's sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: idbcache in Chrome
         run: GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/

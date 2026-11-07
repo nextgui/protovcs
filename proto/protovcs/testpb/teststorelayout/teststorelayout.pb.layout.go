@@ -27,56 +27,50 @@ import (
 //
 // Carried as text rather than rebuilt in Go so that the layout hashed into
 // every commit is the one an author edited, byte for byte.
-const layoutText = `name:  "teststore"
-root_message:  "nextgui.protovcs.testpb.Store"
-schema_version:  1
-splits:  {
-  field:  "records"
-  by:  {
-    field:  "group"
-    transform:  TRANSFORM_IDENTITY
-  }
-  by:  {
-    field:  "date"
-    transform:  TRANSFORM_MONTH
-  }
-  order:  "id"
+const layoutText = `# The layout the protovcs tests use, and the one the build rule is proved
+# against. Records are split by group and month; accounts one item each.
+
+name: "teststore"
+root_message: "nextgui.protovcs.testpb.Store"
+schema_version: 1
+
+splits {
+  field: "records"
+  by { field: "group" transform: TRANSFORM_IDENTITY }
+  by { field: "date" transform: TRANSFORM_MONTH }
+  order: "id"
 }
-splits:  {
-  field:  "accounts"
-  by:  {
-    field:  "id"
-    transform:  TRANSFORM_IDENTITY
-  }
+
+splits {
+  field: "accounts"
+  by { field: "id" transform: TRANSFORM_IDENTITY }
 }
-scopes:  {
-  name:  "Everything"
-  include:  {
-    field:  "records"
-  }
-  include:  {
-    field:  "accounts"
-  }
+
+scopes {
+  name: "Everything"
+  include { field: "records" }
+  include { field: "accounts" }
 }
-scopes:  {
-  name:  "RecordsAndName"
-  include:  {
-    field:  "records"
-  }
-  include:  {
-    field:  "name"
-  }
+
+# A scope naming a field no split covers, which is the case that used to fail
+# silently: "name" lives in the root item, so a scope built from Field("name")
+# would cover nothing and the view would read it as empty.
+scopes {
+  name: "RecordsAndName"
+  include { field: "records" }
+  include { field: "name" }
 }
-queries:  {
-  name:  "RecordsForGroup"
-  field:  "records"
-  by:  {
-    field:  "group"
-    op:  OP_EQ
-  }
+
+queries {
+  name: "RecordsForGroup"
+  field: "records"
+  by { field: "group" op: OP_EQ }
 }
-root_max_bytes:  65536
-commit_message:  "nextgui.protovcs.testpb.Change"
+
+# The message a commit may carry beside its text.
+commit_message: "nextgui.protovcs.testpb.Change"
+
+root_max_bytes: 65536
 `
 
 // RootMessage is the message this layout decomposes.
