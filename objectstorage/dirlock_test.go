@@ -66,14 +66,17 @@ func TestALockHeldByARunningProcessIsRefused(t *testing.T) {
 }
 
 // A pid is only meaningful on the machine that wrote it. A directory shared
-// with another host, or with a guest, is left alone.
+// with another host, or with a guest, is left alone even when the remote pid
+// happens to equal this process's pid (such as PID 1 in a container).
 func TestALockFromAnotherHostIsRefused(t *testing.T) {
-	dir := t.TempDir()
-	writeLock(t, dir, fmt.Sprintf("pid %d\nhost not-%s\n", deadPid(t), hostname(t)))
+	for _, pid := range []int{deadPid(t), os.Getpid()} {
+		dir := t.TempDir()
+		writeLock(t, dir, fmt.Sprintf("pid %d\nhost not-%s\n", pid, hostname(t)))
 
-	if b, err := objectstorage.OpenDir(dir); err == nil {
-		b.Close()
-		t.Fatal("OpenDir took a lock written on another host")
+		if b, err := objectstorage.OpenDir(dir); err == nil {
+			b.Close()
+			t.Fatalf("OpenDir took a lock written on another host (pid %d)", pid)
+		}
 	}
 }
 

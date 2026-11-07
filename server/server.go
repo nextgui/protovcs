@@ -198,7 +198,11 @@ func (s *Server) BeginWrite(ctx context.Context, storeID string, chunks uint32, 
 
 	var raw [16]byte
 	if _, err := rand.Read(raw[:]); err != nil {
-		return nil, fmt.Errorf("protovcs: generating a reservation id: %w", err)
+		_, refundErr := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+			accountOf(st, s.now()).release(&Reservation{Chunks: chunks, Bytes: bytes})
+			return nil
+		})
+		return nil, errors.Join(fmt.Errorf("protovcs: generating a reservation id: %w", err), refundErr)
 	}
 	r := &Reservation{
 		ID:          hex.EncodeToString(raw[:]),
@@ -207,7 +211,11 @@ func (s *Server) BeginWrite(ctx context.Context, storeID string, chunks uint32, 
 		ExpiresUnix: s.now().Add(ReservationTTL).Unix(),
 	}
 	if err := s.storage.PutReservation(ctx, storeID, r); err != nil {
-		return nil, err
+		_, refundErr := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+			accountOf(st, s.now()).release(r)
+			return nil
+		})
+		return nil, errors.Join(err, refundErr)
 	}
 	return r, nil
 }
@@ -261,23 +269,24 @@ func (s *Server) takeBack(ctx context.Context, storeID string, chunks []protovcs
 	if err != nil {
 		return err
 	}
-	var marked []protovcs.ChunkID
+	var anyMarked bool
 	for _, c := range chunks {
 		if _, ok := condemned.Chunks[c.ID]; ok {
-			marked = append(marked, c.ID)
+			anyMarked = true
+			break
 		}
 	}
-	if len(marked) == 0 {
+	if !anyMarked {
 		return nil
 	}
 	_, err = s.storage.UpdateCondemned(ctx, storeID, func(c *Condemned) error {
-		for _, id := range marked {
-			if c.Chunks[id].Deleting {
-				return errCollecting(id)
+		for _, ch := range chunks {
+			if c.Chunks[ch.ID].Deleting {
+				return errCollecting(ch.ID)
 			}
 		}
-		for _, id := range marked {
-			delete(c.Chunks, id)
+		for _, ch := range chunks {
+			delete(c.Chunks, ch.ID)
 		}
 		return nil
 	})
@@ -709,6 +718,11 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 	if err := checkObjectSize(store.GetQuota(), "commit "+id.String(), size); err != nil {
 		return protovcs.CommitID{}, err
 	}
+	if reservationID != "" {
+		if err := s.releaseReservation(ctx, storeID, reservationID); err != nil {
+			return protovcs.CommitID{}, err
+		}
+	}
 	now := s.now()
 	if _, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
 		if err := accountOf(st, now).storeCommit(size); err != nil {
@@ -727,12 +741,6 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 			return nil
 		})
 		return protovcs.CommitID{}, errors.Join(err, refundErr)
-	}
-
-	if reservationID != "" {
-		if err := s.releaseReservation(ctx, storeID, reservationID); err != nil {
-			return protovcs.CommitID{}, err
-		}
 	}
 	return id, nil
 }
@@ -887,22 +895,23 @@ func (s *Server) takeBackReachable(ctx context.Context, storeID string, name []b
 	if err != nil {
 		return err
 	}
-	var marked []protovcs.ChunkID
+	var anyMarked bool
 	for _, id := range ids {
 		if _, ok := condemned.Chunks[id]; ok {
-			marked = append(marked, id)
+			anyMarked = true
+			break
 		}
 	}
-	if len(marked) == 0 {
+	if !anyMarked {
 		return nil
 	}
 	_, err = s.storage.UpdateCondemned(ctx, storeID, func(c *Condemned) error {
-		for _, id := range marked {
+		for _, id := range ids {
 			if c.Chunks[id].Deleting {
 				return errCollecting(id)
 			}
 		}
-		for _, id := range marked {
+		for _, id := range ids {
 			delete(c.Chunks, id)
 		}
 		return nil

@@ -205,15 +205,17 @@ func (c commitsUnreadable) GetCommit(ctx context.Context, storeID string, id pro
 }
 
 // Purging deletes every chunk, so it does not read the history, and a commit
-// that cannot be read does not keep the store from being purged.
+// that cannot be read does not keep the store from being purged or swept.
 func TestAPurgeFinishesWhenTheHistoryCannotBeRead(t *testing.T) {
 	ctx := context.Background()
 	_, mem, now, id := deletedStore(t, 0)
 	broken := server.New(commitsUnreadable{mem}).WithClock(func() time.Time { return *now }).WithDeletionRetention(0)
-	if res, err := broken.Collect(ctx, storeID); err != nil || res.Deleted == 0 {
-		t.Fatalf("Collect returned %+v, %v, want the store purged", res, err)
+	sweepRes, err := broken.Sweep(ctx)
+	if err != nil || len(sweepRes.Failed()) != 0 {
+		t.Fatalf("Sweep returned %+v, %v, want the store purged without failure", sweepRes, err)
 	}
 	if hasChunk(t, mem, id) {
 		t.Fatal("a purge left a chunk behind")
 	}
 }
+

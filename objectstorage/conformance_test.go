@@ -315,16 +315,18 @@ func TestListReturnsWhatIsUnderAPrefix(t *testing.T) {
 			t.Fatalf("Put: %v", err)
 		}
 
-		got, err := b.List(ctx, "wanted/")
-		if err != nil {
-			t.Fatalf("List: %v", err)
-		}
-		if len(got) != 5 {
-			t.Fatalf("List returned %d objects under the prefix, want 5", len(got))
-		}
-		for _, o := range got {
-			if len(o.Key) < 7 || o.Key[:7] != "wanted/" {
-				t.Fatalf("List returned %q, which is not under the prefix", o.Key)
+		for _, prefix := range []string{"wanted/", "wanted/0"} {
+			got, err := b.List(ctx, prefix)
+			if err != nil {
+				t.Fatalf("List(%q): %v", prefix, err)
+			}
+			if len(got) != 5 {
+				t.Fatalf("List(%q) returned %d objects under the prefix, want 5", prefix, len(got))
+			}
+			for _, o := range got {
+				if !strings.HasPrefix(o.Key, prefix) {
+					t.Fatalf("List(%q) returned %q, which is not under the prefix", prefix, o.Key)
+				}
 			}
 		}
 	})
