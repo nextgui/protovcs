@@ -324,9 +324,9 @@ fn the_schema_chunk_matches() {
 
 /// Without Go's descriptors supplied, the store records the files it reads
 /// from its own pool. Every first-party file matches what Go records.
-/// descriptor.proto does not: protobuf-go compiles in an older copy of it than
-/// the protobuf release Bazel builds with, and neither client can produce the
-/// other's.
+/// descriptor.proto does not: protobuf-go compiles in its own copy of it, and
+/// protox, which compiles the protos here, bundles a different one. Neither
+/// client can produce the other's.
 #[test]
 fn the_schema_descriptors_match_go_except_descriptor_proto() {
     let s = Store::builder()
