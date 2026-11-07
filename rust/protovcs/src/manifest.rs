@@ -130,10 +130,25 @@ fn entry_child(e: &Entry) -> Option<&[u8]> {
 }
 
 fn find_entry<'a>(node: &'a ManifestNode, segment: &str) -> Option<&'a Entry> {
-    node.entries
+    if let Ok(i) = node
+        .entries
         .binary_search_by(|e| e.segment.as_str().cmp(segment))
-        .ok()
-        .map(|i| &node.entries[i])
+    {
+        return Some(&node.entries[i]);
+    }
+    // Versions written before key_cmp sorted a node by whole item key, which
+    // puts a segment such as "a-b" before "a" when both have children. The
+    // binary search misses there, so a node in that order is searched in full.
+    node.entries.iter().find(|e| e.segment == segment)
+}
+
+/// Orders item keys one segment at a time, which is the order a node's entries
+/// are kept in. Comparing whole keys is not the same: "/" sorts above "-", ".",
+/// "%" and others, so "x/a-b/1" would come before "x/a/1" while the segment
+/// "a" comes before "a-b".
+fn key_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let rank = |c: u8| if c == b'/' { 0u16 } else { u16::from(c) + 1 };
+    a.bytes().map(rank).cmp(b.bytes().map(rank))
 }
 
 /// Writes the tree naming every item, deepest nodes first and the root last.
@@ -147,7 +162,7 @@ fn find_entry<'a>(node: &'a ManifestNode, segment: &str) -> Option<&'a Entry> {
 /// more than 65,536 entries.
 pub fn build_manifest(s: &dyn Sealer, items: &[ItemRef]) -> Result<Vec<ManifestChunk>> {
     let mut sorted: Vec<ItemRef> = items.to_vec();
-    sorted.sort_by(|a, b| a.key.cmp(&b.key));
+    sorted.sort_by(|a, b| key_cmp(&a.key, &b.key));
     for w in sorted.windows(2) {
         if w[0].key == w[1].key {
             return Err(Error::invalid(format!(
@@ -480,11 +495,14 @@ pub async fn update_manifest(
         if loaded.contains_key(prefix) {
             return Ok(());
         }
-        let node = if id.is_zero() {
+        let mut node = if id.is_zero() {
             ManifestNode::default()
         } else {
             fetch.node(prefix, id).await?
         };
+        // A node from a version written before key_cmp may be out of segment
+        // order, and an update keeps it sorted from here.
+        node.entries.sort_by(|a, b| a.segment.cmp(&b.segment));
         loaded.insert(prefix.to_string(), node);
         Ok(())
     }

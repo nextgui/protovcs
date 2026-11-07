@@ -58,6 +58,7 @@ go_test(
         "log_test.go",
         "readat_test.go",
         "rewrite_test.go",
+        "manifest_order_test.go",
         "manifest_test.go",
         "materialize_test.go",
         "memo_test.go",

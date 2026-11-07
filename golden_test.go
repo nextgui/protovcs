@@ -342,7 +342,9 @@ func goldenLayouts() map[string]*pb.Layout {
 }
 
 func goldenRecords() []*testpb.Record {
-	groups := []string{"alpha", "beta/slash", "gamma%"}
+	// "gamma" beside "gamma%": the escaped segment "gamma%25" sorts after
+	// "gamma" by segment and before it by whole key.
+	groups := []string{"alpha", "beta/slash", "gamma%", "gamma"}
 	var out []*testpb.Record
 	for i := 0; i < 24; i++ {
 		r := &testpb.Record{
