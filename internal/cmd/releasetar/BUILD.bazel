@@ -1,0 +1,19 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library", "go_test")
+
+go_library(
+    name = "releasetar_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/nextgui/protovcs/internal/cmd/releasetar",
+    visibility = ["//visibility:private"],
+)
+
+go_binary(
+    name = "releasetar",
+    embed = [":releasetar_lib"],
+)
+
+go_test(
+    name = "releasetar_test",
+    srcs = ["main_test.go"],
+    embed = [":releasetar_lib"],
+)

@@ -238,6 +238,10 @@ After changing the Go client in a way that changes its bytes, rewrite the vector
 go test -run TestGoldenVectors -golden_out=$PWD/testdata/golden/vectors.json .
 ```
 
+## Releases
+
+Each release has a source tarball whose bytes are reproducible, with its SHA-256, on the [releases page](https://github.com/nextgui/protovcs/releases). [RELEASING.md](RELEASING.md) says how releases are cut and how to check one.
+
 ## Status
 
 protovcs is in use, but it hasn't reached 1.0. The storage format is stable. The Go and Rust APIs may still change.
