@@ -512,7 +512,11 @@ pub async fn update_manifest(
 
     load(&mut loaded, fetch, "", old_root).await?;
 
-    for (key, r) in changes {
+    let mut sorted_changes: Vec<(&String, &Option<ItemRef>)> = changes.iter().collect();
+    sorted_changes
+        .sort_by(|(ka, ra), (kb, rb)| rb.is_none().cmp(&ra.is_none()).then_with(|| ka.cmp(kb)));
+
+    for (key, r) in sorted_changes {
         let segs: Vec<&str> = key.split('/').collect();
         let mut prefix = String::new();
         for seg in &segs[..segs.len() - 1] {
@@ -539,7 +543,10 @@ pub async fn update_manifest(
         // an item where a directory is, or one this change set is creating,
         // would replace or drop every item under it.
         let is_dir = find_entry(&loaded[&prefix], leaf).is_some_and(|e| entry_child(e).is_some())
-            || (key != ROOT_ITEM_KEY && loaded.contains_key(&join(&prefix, leaf)));
+            || (key != ROOT_ITEM_KEY
+                && loaded
+                    .get(&join(&prefix, leaf))
+                    .is_some_and(|n| !n.entries.is_empty()));
         if is_dir {
             return Err(Error::invalid(format!(
                 "protovcs: item {key:?} is also a directory holding other items"
@@ -547,7 +554,20 @@ pub async fn update_manifest(
         }
         let node = loaded.get_mut(&prefix).expect("loaded above");
         match r {
-            None => remove_entry(node, leaf),
+            None => {
+                remove_entry(node, leaf);
+                let mut cur = prefix.clone();
+                while !cur.is_empty() && loaded[&cur].entries.is_empty() {
+                    let (parent_prefix, seg) = split_last(&cur);
+                    let parent_prefix = parent_prefix.to_string();
+                    let seg = seg.to_string();
+                    let Some(parent) = loaded.get_mut(&parent_prefix) else {
+                        break;
+                    };
+                    remove_entry(parent, &seg);
+                    cur = parent_prefix;
+                }
+            }
             Some(r) => set_entry(node, item_entry(leaf, r)),
         }
     }
@@ -593,7 +613,9 @@ pub async fn update_manifest(
             ))
         })?;
         if empty {
-            remove_entry(parent, segment);
+            if find_entry(parent, segment).is_some_and(|e| entry_child(e).is_some()) {
+                remove_entry(parent, segment);
+            }
         } else {
             set_entry(parent, child_entry(segment, &id, total, elements));
         }

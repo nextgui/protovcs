@@ -776,3 +776,24 @@ async fn non_fast_forward_update_ref_returns_not_fast_forward() {
         "expected NotFastForward, got {err:?}"
     );
 }
+
+#[tokio::test]
+async fn partial_put_allows_replacing_a_cleared_item_with_a_parent_or_child_key() {
+    let server = MemServer::new();
+    let s = store(&server);
+    let main = s.branch("main");
+    main.write(&meta("seed"), &store_message(10)).await.unwrap();
+
+    let mut part = main.checkout(Scope::prefix("records/alpha")).await.unwrap();
+    let keys: Vec<String> = part.items().map(|it| it.key.clone()).collect();
+    assert!(!keys.is_empty());
+    for k in keys {
+        part.put(protovcs::Item::new(k, new(STORE))).unwrap();
+    }
+    part.put(protovcs::Item::new(
+        "records/alpha",
+        with_lists(vec![record_in("collapsed", "alpha", 2026)], Vec::new()),
+    ))
+    .unwrap();
+    part.commit(&meta("collapse alpha")).await.unwrap();
+}
