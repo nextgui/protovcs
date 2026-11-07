@@ -8,10 +8,8 @@
 //
 // A chunk's stored bytes are not a protobuf. They are a version byte, a
 // twelve-byte nonce, then AES-256-GCM ciphertext and tag, with the chunk's own
-// name as additional authenticated data — the same envelope
-// //lib/vcsclient/cryptbackend uses, so there is one sealing format in this
-// repository rather than two. The messages below describe what is inside a
-// chunk once it is open.
+// name as additional authenticated data. The messages below describe what is
+// inside a chunk once it is open.
 //
 // # What the server is allowed to see
 //
@@ -157,11 +155,11 @@ message CommitPayload {
   // Chunk id of the SchemaChunk this commit was written under.
   bytes schema_chunk = 2;
 
-  // Merkle hash over every (item key, chunk id) pair, sorted.
+  // SHA-256 of the manifest root's chunk id.
   //
-  // One value that answers "is this the same content", and a check on the whole
-  // materialization that does not depend on the manifest's structure being
-  // right.
+  // One value that answers "is this the same content". The root's id is a
+  // fingerprint of its entries, each a fingerprint of the subtree below, so it
+  // commits to every (item key, chunk id) pair in the version.
   bytes tree_digest = 3;
 
   // The branch this was written on, for display. The ref itself is stored under

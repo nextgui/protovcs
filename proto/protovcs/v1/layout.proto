@@ -232,10 +232,9 @@ message ScopeInclude {
 
 // Query is a lookup the generated package exposes as a method.
 //
-// Declared rather than composed, following //lib/store/protostore. There the
-// reason is that Firestore needs an index per query shape. Here it is worse: a
-// query the splits cannot answer is not slow, it is a download of the whole
-// store, and a browser is where that happens.
+// Declared rather than composed, because a query the splits cannot answer is
+// not slow: it is a download of the whole store, and a browser is where that
+// happens.
 message Query {
   // Name of the generated method, such as "EntriesForDateRange".
   string name = 1;

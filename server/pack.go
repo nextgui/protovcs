@@ -13,7 +13,7 @@ import (
 )
 
 // MaxPackHintChunks is the most chunk ids one pack hint may name. A store holding
-// ten years of a household's finances reaches about 3,800.
+// ten years of daily records reaches about 3,800.
 const MaxPackHintChunks = 100_000
 
 // ErrHintTooLarge is returned for a pack hint naming more than
@@ -109,8 +109,8 @@ type PackResult struct {
 	Skipped string
 }
 
-// Policy values, accepted 2026-10-29 without a real sync history to measure
-// them against.
+// Policy values, chosen without a real sync history to measure them
+// against.
 const (
 	packMinNewChunks = 64
 	packMinNewBytes  = 256 << 10
