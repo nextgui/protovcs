@@ -261,6 +261,14 @@ func (b *Bucket) Stat(ctx context.Context, key string) (objectstorage.ObjectInfo
 	}, nil
 }
 
+func (b *Bucket) DeleteIfGeneration(ctx context.Context, key string, expected int64) error {
+	err := b.bucket.Object(key).If(storage.Conditions{GenerationMatch: expected}).Delete(ctx)
+	if errors.Is(err, storage.ErrObjectNotExist) {
+		return objectstorage.ErrGenerationMismatch
+	}
+	return asObjectError(key, err)
+}
+
 func (b *Bucket) Delete(ctx context.Context, key string) error {
 	err := b.bucket.Object(key).Delete(ctx)
 	if errors.Is(err, storage.ErrObjectNotExist) {

@@ -514,7 +514,12 @@ func (s *Storage) UpdateRef(ctx context.Context, storeID string, name []byte, co
 	}
 
 	if commit.IsZero() {
-		if err := s.bucket.Delete(ctx, refKey(storeID, name)); err != nil {
+		// Conditional on the generation read, as a move is, so a move that
+		// lands in between is reported rather than deleted.
+		if err := s.bucket.DeleteIfGeneration(ctx, refKey(storeID, name), gen); err != nil {
+			if errors.Is(err, ErrGenerationMismatch) {
+				return protovcs.RefState{}, protovcs.ErrRaceLost
+			}
 			return protovcs.RefState{}, err
 		}
 		return protovcs.RefState{}, nil
@@ -688,11 +693,16 @@ func (s *Storage) ListReservations(ctx context.Context, storeID string) ([]*serv
 	var out []*server.Reservation
 	for _, o := range objects {
 		id := o.Key[strings.LastIndex(o.Key, "/")+1:]
+		// A reservation that cannot be read is an error, not one to skip:
+		// collection reads "no live reservation" as "no write in progress".
+		// One deleted since the listing is gone, and is skipped.
 		r, err := s.GetReservation(ctx, storeID, id)
-		if err != nil || r == nil {
-			continue
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, r)
+		if r != nil {
+			out = append(out, r)
+		}
 	}
 	return out, nil
 }

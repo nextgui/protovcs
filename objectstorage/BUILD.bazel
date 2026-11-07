@@ -33,6 +33,7 @@ go_test(
         "dirlock_test.go",
         "pack_internal_test.go",
         "pack_test.go",
+        "refcas_test.go",
         "storage_test.go",
     ],
     embed = [":objectstorage"],
