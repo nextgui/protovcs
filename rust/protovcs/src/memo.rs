@@ -1,6 +1,6 @@
 //! What a store remembers by content. Port of `memo.go`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 use futures::FutureExt;
@@ -66,7 +66,10 @@ impl Memo {
         loop {
             let (mine, waits) = {
                 let mut inner = self.lock();
+                // In the order asked for; `wanted` makes the duplicate check
+                // constant time.
                 let mut want = Vec::new();
+                let mut wanted: HashSet<ChunkId> = HashSet::new();
                 let mut waits: Vec<Fetch> = Vec::new();
                 for id in ids {
                     if inner.chunks.contains_key(id) {
@@ -78,7 +81,7 @@ impl Memo {
                         }
                         continue;
                     }
-                    if !want.contains(id) {
+                    if wanted.insert(*id) {
                         want.push(*id);
                     }
                 }

@@ -213,6 +213,53 @@ impl Compiled {
         list_at_or_create(frag, &s.path).push(Value::Message(elem));
         Ok(())
     }
+
+    /// Puts one element into the fragment of item `key`: it replaces the
+    /// element with the same identity, or is added, and the list is then
+    /// sorted as [`Compiled::materialize`] sorts it.
+    pub(crate) fn put_element(
+        &self,
+        frag: &mut DynamicMessage,
+        key: &str,
+        field: &str,
+        elem: DynamicMessage,
+    ) -> Result<()> {
+        let s = self.split_for(field).ok_or_else(|| {
+            Error::invalid(format!(
+                "protovcs: layout {:?} does not split {field:?}",
+                self.layout().name
+            ))
+        })?;
+        // Edited on a copy, so a refusal below leaves `frag` as it was.
+        let mut edited = frag.clone();
+        let list = list_at_or_create(&mut edited, &s.path);
+        if let Some(i) = same_identity(s, list, &elem) {
+            list[i] = Value::Message(elem);
+        } else {
+            list.push(Value::Message(elem));
+        }
+        // Sorted and checked exactly as materialize does, so the item encodes
+        // the same whichever way it was built.
+        if list.len() > 1 {
+            sort_list(list, &s.order);
+        }
+        check_unique(s, key, list)?;
+        *frag = edited;
+        Ok(())
+    }
+}
+
+/// The index of the element of `list` that has `elem`'s identity. A split
+/// that declares no identity has none to match.
+fn same_identity(s: &CompiledSplit, list: &[Value], elem: &DynamicMessage) -> Option<usize> {
+    if s.identity.is_empty() {
+        return None;
+    }
+    let want = value_at(elem, &s.identity).map(|v| scalar_string(&v))?;
+    list.iter().position(|v| {
+        let Value::Message(m) = v else { return false };
+        value_at(m, &s.identity).is_some_and(|got| scalar_string(&got) == want)
+    })
 }
 
 /// Reads a field path, or `None` when some step is absent.

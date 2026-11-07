@@ -56,7 +56,8 @@ pub use digest::{node_digest_for_test, tree_digest};
 pub use error::{Error, ErrorKind, Result};
 pub use headmarks::{HeadMarks, MemoryHeadMarks};
 pub use layout::{
-    Compiled, ItemSize, bool_segment, date_segment, int_segment, string_segment, uint_segment,
+    Compiled, ItemSize, bool_segment, date_segment, hash_segment, int_segment, string_segment,
+    uint_segment,
 };
 #[doc(hidden)]
 pub use layout::{float_string_for_test, unix_to_date_for_test};

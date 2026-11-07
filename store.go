@@ -353,7 +353,9 @@ func (b *Branch) Watch(ctx context.Context, moved func(RefState) error) error {
 		// A branch that has never existed is not news. One that existed a
 		// moment ago and does not now is, and it is reported as a zero state.
 		if now == nil {
-			if last == nil {
+			// Reported once: a branch already reported deleted has not moved
+			// again just because some other branch did.
+			if last == nil || last.Commit.IsZero() {
 				return nil
 			}
 			last = &RefState{Name: append([]byte(nil), b.refName...)}
@@ -922,9 +924,6 @@ func (b *Branch) publishRefsForced(ctx context.Context, meta CommitMeta, parents
 	}
 	for _, n := range nodes {
 		pending[n.ID] = n.Canonical
-	}
-	if len(nodes) == 0 {
-		return CommitID{}, fmt.Errorf("protovcs: a version with no items cannot be published")
 	}
 	return b.publishBuiltForced(ctx, meta, parents, state, nodes, nodes[len(nodes)-1].ID, pending, force)
 }

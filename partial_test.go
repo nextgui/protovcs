@@ -1,13 +1,18 @@
 package protovcs_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"math"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
 
 	protovcs "github.com/nextgui/protovcs"
 	"github.com/nextgui/protovcs/memtransport"
 	testpb "github.com/nextgui/protovcs/proto/protovcs/testpb"
+	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
 )
 
 func seeded(t *testing.T, tr *memtransport.Transport, n int) *protovcs.Store {
@@ -282,4 +287,199 @@ func storeAt(t *testing.T, ctx context.Context, s *protovcs.Store, scope protovc
 		t.Fatalf("Materialized returned %T", m)
 	}
 	return got
+}
+
+func TestAFieldScopeHoldsKeysOutsideTheBasicMultilingualPlane(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, memtransport.New(), keyring(t))
+	if _, err := s.Branch("main").Write(ctx, meta("w"), &testpb.Store{
+		Accounts: []*testpb.Account{{Id: "plain"}, {Id: "\U0001F600"}, {Id: "\U0010FFFF"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, scope := range []protovcs.Scope{protovcs.Field("accounts"), protovcs.Everything()} {
+		part, err := s.Branch("main").Checkout(ctx, scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if n := len(part.Items()); n != 3 {
+			t.Errorf("a checkout of %s holds %d accounts, want 3", scope, n)
+		}
+		if _, _, err := part.Get("accounts/\U0001F600"); err != nil {
+			t.Errorf("%s does not hold the emoji key: %v", scope, err)
+		}
+	}
+}
+
+func TestAPrefixScopeCoversWholeSegmentsOnly(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, memtransport.New(), keyring(t))
+	d := &testpb.Date{Year: 2026, Month: 1, Day: 1}
+	var recs []*testpb.Record
+	for _, g := range []string{"al", "al-x", "alpha", "al/x"} {
+		recs = append(recs, &testpb.Record{Id: g, Group: g, Date: d})
+	}
+	if _, err := s.Branch("main").Write(ctx, meta("w"), &testpb.Store{Records: recs}); err != nil {
+		t.Fatal(err)
+	}
+	part, err := s.Branch("main").Checkout(ctx, protovcs.Prefix("records/al"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var keys []protovcs.ItemKey
+	for _, it := range part.Items() {
+		keys = append(keys, it.Key)
+	}
+	if len(keys) != 1 || keys[0] != "records/al/2026/01" {
+		t.Fatalf("Prefix(\"records/al\") holds %q, want only records/al/2026/01", keys)
+	}
+	for _, k := range []protovcs.ItemKey{"records/alpha/2026/01", "records/al-x/2026/01"} {
+		if part.Scope().Holds(k) {
+			t.Errorf("Prefix(\"records/al\") holds %q", k)
+		}
+	}
+	if !part.Scope().Holds("records/al") {
+		t.Error("Prefix(\"records/al\") does not hold the key records/al itself")
+	}
+}
+
+func TestABetweenScopeOverNegativeIntegerKeys(t *testing.T) {
+	ctx := context.Background()
+	l := &pb.Layout{
+		Name: "byamount", RootMessage: "nextgui.protovcs.testpb.Store", SchemaVersion: 1,
+		Splits: []*pb.Split{{Field: "records", By: []*pb.ShardKey{{Field: "amount", Transform: pb.Transform_TRANSFORM_IDENTITY}}}},
+	}
+	c, err := protovcs.CompileLayout(l, (&testpb.Store{}).ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatal(err)
+	}
+	s, err := protovcs.NewBuilder().WithTransport(memtransport.New()).WithSealer(keyring(t)).WithLayout(c).Build()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recs []*testpb.Record
+	for _, a := range []int64{math.MinInt64, -3, -2, -1, 0, 1} {
+		recs = append(recs, &testpb.Record{Id: "r", Amount: a})
+	}
+	if _, err := s.Branch("main").Write(ctx, meta("w"), &testpb.Store{Records: recs}); err != nil {
+		t.Fatal(err)
+	}
+	part, err := s.Branch("main").Checkout(ctx, protovcs.Between(
+		protovcs.ItemKey("records/"+protovcs.IntSegment(-3)),
+		protovcs.ItemKey("records/"+protovcs.IntSegment(-1))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(part.Items()); n != 3 {
+		t.Fatalf("Between(-3, -1) holds %d items, want 3", n)
+	}
+}
+
+func TestPutElementReplacesTheElementWithTheSameIdentity(t *testing.T) {
+	ctx := context.Background()
+	s := seeded(t, memtransport.New(), 3)
+	main := s.Branch("main")
+
+	part, err := main.Checkout(ctx, protovcs.Nothing())
+	if err != nil {
+		t.Fatal(err)
+	}
+	upd := records(3)[0]
+	upd.Amount = 999
+	if err := part.PutElement(ctx, "records", upd); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Commit(ctx, meta("update")); err != nil {
+		t.Fatalf("Commit: %v", err)
+	}
+	got, err := main.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var amounts []int64
+	for _, r := range got.(*testpb.Store).GetRecords() {
+		if r.GetId() == upd.GetId() {
+			amounts = append(amounts, r.GetAmount())
+		}
+	}
+	if len(amounts) != 1 || amounts[0] != 999 {
+		t.Fatalf("after PutElement the store holds amounts %v for %q, want [999]", amounts, upd.GetId())
+	}
+	if _, err := main.Change(ctx, meta("noop"), func(context.Context, proto.Message) error { return nil }); err != nil {
+		t.Fatalf("a Change after PutElement fails: %v", err)
+	}
+}
+
+func TestPutElementSortsTheItemAsMaterializeDoes(t *testing.T) {
+	ctx := context.Background()
+	s := newStore(t, memtransport.New(), keyring(t))
+	main := s.Branch("main")
+	d := &testpb.Date{Year: 2026, Month: 1, Day: 1}
+	if _, err := main.Write(ctx, meta("w"), &testpb.Store{Records: []*testpb.Record{{Id: "b", Group: "g", Date: d}}}); err != nil {
+		t.Fatal(err)
+	}
+	part, err := main.Checkout(ctx, protovcs.Nothing())
+	if err != nil {
+		t.Fatal(err)
+	}
+	added := &testpb.Record{Id: "a", Group: "g", Date: d}
+	if err := part.PutElement(ctx, "records", added); err != nil {
+		t.Fatal(err)
+	}
+
+	want, err := s.Layout().Materialize(&testpb.Store{Records: []*testpb.Record{added, {Id: "b", Group: "g", Date: d}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantBytes, _ := protovcs.CanonicalBytes(want[0].Fragment)
+	got, _, err := part.Get(want[0].Key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotBytes, _ := protovcs.CanonicalBytes(got.Fragment)
+	if !bytes.Equal(gotBytes, wantBytes) {
+		t.Fatalf("PutElement built item %q as %x; Materialize writes %x", want[0].Key, gotBytes, wantBytes)
+	}
+}
+
+func TestPutRefusesADirectoryKeyOrAKeyBelowAnItem(t *testing.T) {
+	ctx := context.Background()
+	s := seeded(t, memtransport.New(), 30)
+	main := s.Branch("main")
+	for _, c := range []struct {
+		name string
+		key  protovcs.ItemKey
+	}{
+		{"a directory of items", "records/alpha"},
+		{"a key below an item", "records/alpha/2026/01/x"},
+	} {
+		for _, frag := range []*testpb.Store{{}, {Name: "x"}} {
+			part, err := main.Checkout(ctx, protovcs.Nothing())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := part.Put(protovcs.Item{Key: c.key, Fragment: frag}); err != nil {
+				continue
+			}
+			if _, err := part.Commit(ctx, meta("p")); err == nil {
+				t.Errorf("Put of %s at %q was committed", c.name, c.key)
+			}
+		}
+	}
+	// The same refusal against an item this handle holds, before any commit.
+	part, err := main.Checkout(ctx, protovcs.Prefix("records/alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := part.Put(protovcs.Item{Key: "records/alpha", Fragment: &testpb.Store{}}); err == nil {
+		t.Error("Put accepted a key naming a directory of held items")
+	}
+
+	got, err := main.Read(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := len(got.(*testpb.Store).GetRecords()); n != 30 {
+		t.Fatalf("the store holds %d records after the refused puts, want 30", n)
+	}
 }

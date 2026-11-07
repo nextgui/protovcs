@@ -35,6 +35,10 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/dynamicpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	protovcs "github.com/nextgui/protovcs"
@@ -78,6 +82,29 @@ type goldenVectors struct {
 	Entropy   string           `json:"entropy"`
 	Messages  []messageVector  `json:"messages"`
 	Refs      []sameRefsVector `json:"same_refs"`
+	Groups    []groupVector    `json:"groups"`
+	Puts      []putVector      `json:"put_element"`
+}
+
+// groupVector is a message with a group field, described by its own
+// descriptors because testpb has none, and its canonical bytes.
+type groupVector struct {
+	Descriptors hexBytes `json:"descriptors"`
+	Message     string   `json:"message"`
+	Input       hexBytes `json:"input"`
+	Canonical   hexBytes `json:"canonical"`
+}
+
+// putVector is one element put into a teststore store holding a named
+// message, and the item it leaves: the element either replaces one with the
+// same id or is added, and the item is sorted as Materialize sorts it.
+type putVector struct {
+	Name      string   `json:"name"`
+	Message   string   `json:"message"`
+	Field     string   `json:"field"`
+	Element   hexBytes `json:"element"`
+	Key       string   `json:"key"`
+	Canonical hexBytes `json:"canonical"`
 }
 
 type chunkIDVector struct {
@@ -506,6 +533,8 @@ func TestGoldenVectors(t *testing.T) {
 	}
 
 	v.Refs = goldenSameRefs()
+	v.Groups = goldenGroups(t)
+	v.Puts = goldenPuts(ctx, t, kr, compile(t, layouts["teststore"]))
 
 	v.Entropy = entropyLabel
 	v.Schema, v.Store = goldenStoreVector(ctx, t, compile(t, layouts["teststore"]))
@@ -534,7 +563,7 @@ func goldenSegments() []segmentVector {
 			})
 		}
 	}
-	for _, i := range []int64{0, 1, -1, 42, -42, math.MaxInt64, math.MinInt64 + 1} {
+	for _, i := range []int64{0, 1, -1, -2, 42, -42, math.MaxInt64, math.MinInt64 + 1, math.MinInt64} {
 		out = append(out, segmentVector{Kind: "int", Input: strconv.FormatInt(i, 10), Want: protovcs.IntSegment(i)})
 	}
 	for _, u := range []uint64{0, 1, math.MaxUint64} {
@@ -550,6 +579,12 @@ func goldenSegments() []segmentVector {
 	}
 	for _, f := range []float32{0.1, 3.4e38, 1e-7, 16777216} {
 		out = append(out, segmentVector{Kind: "float32", Input: strconv.FormatFloat(float64(f), 'g', -1, 32), Want: fmt.Sprint(f)})
+	}
+	// A hash input is the bucket count, a colon, and the value's segment form.
+	for _, b := range []uint32{1, 3, 16, 1000} {
+		for _, v := range []string{"", "rec-001", protovcs.IntSegment(-1), "ü/ß"} {
+			out = append(out, segmentVector{Kind: "hash", Input: fmt.Sprintf("%d:%s", b, v), Want: protovcs.HashSegment(v, b)})
+		}
 	}
 	out = append(out,
 		segmentVector{Kind: "bool", Input: "true", Want: protovcs.BoolSegment(true)},
@@ -627,6 +662,85 @@ func goldenCanonical(t *testing.T) []canonicalVec {
 	zeros = protowire.AppendTag(zeros, 4, protowire.BytesType)
 	zeros = protowire.AppendString(zeros, "")
 	add("explicit_zeros", zeros)
+	return out
+}
+
+// goldenGroups encodes a group field declared in proto2 and one declared
+// DELIMITED in editions.
+func goldenGroups(t *testing.T) []groupVector {
+	var out []groupVector
+	for _, fdp := range protovcs.GroupFilesForTest() {
+		fd, err := protodesc.NewFile(fdp, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		md := fd.Messages().ByName("M")
+		item := md.Fields().ByName("item")
+		m := dynamicpb.NewMessage(md)
+		inner := dynamicpb.NewMessage(item.Message())
+		inner.Set(item.Message().Fields().ByName("x"), protoreflect.ValueOfInt32(-7))
+		m.Set(item, protoreflect.ValueOfMessage(inner))
+		c, err := protovcs.CanonicalBytes(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, groupVector{
+			Descriptors: mustMarshal(t, &descriptorpb.FileDescriptorSet{File: []*descriptorpb.FileDescriptorProto{fdp}}),
+			Message:     string(md.FullName()),
+			Input:       mustMarshal(t, m),
+			Canonical:   c,
+		})
+	}
+	return out
+}
+
+// goldenPuts puts records into a store holding goldenStore: one replacing a
+// record with the same id, and one added that sorts before the others in its
+// item.
+func goldenPuts(ctx context.Context, t *testing.T, kr protovcs.Sealer, c *protovcs.Compiled) []putVector {
+	t.Helper()
+	replaced := goldenRecords()[3]
+	replaced.Amount = 12345
+	added := proto.Clone(goldenRecords()[0]).(*testpb.Record)
+	added.Id = "rec-"
+	added.Tags = nil
+
+	var out []putVector
+	for _, p := range []struct {
+		name string
+		elem *testpb.Record
+	}{{"replace", replaced}, {"add_sorted", added}} {
+		s, err := protovcs.NewBuilder().WithTransport(memtransport.New()).WithSealer(kr).WithLayout(c).Build()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Branch("main").Write(ctx, protovcs.Commit("seed", "a", "a@example.com"), goldenStore()); err != nil {
+			t.Fatal(err)
+		}
+		part, err := s.Branch("main").Checkout(ctx, protovcs.Nothing())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := part.PutElement(ctx, "records", p.elem); err != nil {
+			t.Fatal(err)
+		}
+		key, err := c.ItemKeyFor("records", p.elem)
+		if err != nil {
+			t.Fatal(err)
+		}
+		it, ok, err := part.Get(key)
+		if err != nil || !ok {
+			t.Fatalf("%s: item %q not held: %v", p.name, key, err)
+		}
+		canonical, err := protovcs.CanonicalBytes(it.Fragment)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, putVector{
+			Name: p.name, Message: "store", Field: "records",
+			Element: mustMarshal(t, p.elem), Key: string(key), Canonical: canonical,
+		})
+	}
 	return out
 }
 

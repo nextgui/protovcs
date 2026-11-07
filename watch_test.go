@@ -288,3 +288,26 @@ func TestAWatchReportsAMoveOnce(t *testing.T) {
 		t.Fatalf("main is at %s, want %s", got, first)
 	}
 }
+
+func TestADeletionIsReportedOnceWhileOtherBranchesMove(t *testing.T) {
+	ctx := context.Background()
+	tr := memtransport.New()
+	s := newStore(t, tr, keyring(t))
+	main := s.Branch("main")
+	write(t, main, "first", 3)
+
+	w := watchBranch(t, main)
+	state := w.next(t, "where main is")
+	if _, err := tr.UpdateRef(ctx, state.Name, protovcs.CommitID{}, state.CASToken, false); err != nil {
+		t.Fatalf("deleting the branch: %v", err)
+	}
+	w.next(t, "the deletion")
+
+	write(t, s.Branch("other"), "other", 3)
+	w.quiet(t, "another branch moved")
+
+	write(t, main, "again", 3)
+	if got := w.next(t, "main created again"); got.Commit.IsZero() {
+		t.Fatal("main created again was reported as a deletion")
+	}
+}

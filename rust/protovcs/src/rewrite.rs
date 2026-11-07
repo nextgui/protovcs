@@ -149,11 +149,10 @@ impl Store {
             self.layout().check_item_size(&r.key, r.bytes, r.elements)?;
         }
         let nodes = build_manifest(self.sealer().as_ref(), &refs)?;
-        let Some(root) = nodes.last().map(|n| n.id) else {
-            return Err(Error::invalid(
-                "protovcs: the rewrite left a version with no items",
-            ));
-        };
+        let root = nodes
+            .last()
+            .map(|n| n.id)
+            .expect("build_manifest always returns the root node");
         for n in &nodes {
             pending.insert(n.id, n.canonical.clone());
         }

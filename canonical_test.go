@@ -6,7 +6,9 @@ import (
 
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
 
 	testpb "github.com/nextgui/protovcs/proto/protovcs/testpb"
 )
@@ -214,4 +216,49 @@ func fieldNumbers(t *testing.T, encoded []byte) []protoreflect.FieldNumber {
 		encoded = encoded[n+vl:]
 	}
 	return out
+}
+
+// groupMessages returns the message M of each file GroupFilesForTest
+// describes.
+func groupMessages(t *testing.T) []protoreflect.MessageDescriptor {
+	t.Helper()
+	var out []protoreflect.MessageDescriptor
+	for _, fdp := range GroupFilesForTest() {
+		fd, err := protodesc.NewFile(fdp, nil)
+		if err != nil {
+			t.Fatalf("%s: %v", fdp.GetName(), err)
+		}
+		out = append(out, fd.Messages().ByName("M"))
+	}
+	return out
+}
+
+func TestCanonicalWritesAGroupWithStartAndEndTags(t *testing.T) {
+	for _, md := range groupMessages(t) {
+		fd := md.Fields().ByName("item")
+		if fd.Kind() != protoreflect.GroupKind {
+			t.Fatalf("%s: item is %v, want a group", md.FullName(), fd.Kind())
+		}
+		m := dynamicpb.NewMessage(md)
+		item := dynamicpb.NewMessage(fd.Message())
+		item.Set(fd.Message().Fields().ByName("x"), protoreflect.ValueOfInt32(7))
+		m.Set(fd, protoreflect.ValueOfMessage(item))
+
+		got, err := CanonicalBytes(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var want []byte
+		want = protowire.AppendTag(want, 1, protowire.StartGroupType)
+		want = protowire.AppendTag(want, 2, protowire.VarintType)
+		want = protowire.AppendVarint(want, 7)
+		want = protowire.AppendTag(want, 1, protowire.EndGroupType)
+		if !bytes.Equal(got, want) {
+			t.Fatalf("%s: canonical bytes %x, want %x", md.FullName(), got, want)
+		}
+		back := dynamicpb.NewMessage(md)
+		if err := proto.Unmarshal(got, back); err != nil || !proto.Equal(m, back) {
+			t.Fatalf("%s: the group did not read back (err=%v): wrote %v, read %v", md.FullName(), err, m, back)
+		}
+	}
 }

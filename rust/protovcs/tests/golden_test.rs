@@ -11,8 +11,9 @@ use buffa_descriptor::generated::descriptor::FileDescriptorSet;
 use buffa_types::google::protobuf::Timestamp;
 use protovcs::proto::{Commit, ManifestNode, Transform};
 use protovcs::{
-    ChunkId, CommitId, CommitMeta, ItemRef, Keyring, PlainSealer, RefState, Role, Sealer, Store,
-    added_since, build_manifest, canonical_bytes, update_manifest,
+    ChunkId, CommitId, CommitMeta, DescriptorPool, DynamicMessage, ItemRef, Keyring, PlainSealer,
+    RefState, Role, Scope, Sealer, Store, added_since, build_manifest, canonical_bytes,
+    update_manifest,
 };
 use protovcs_memtransport::MemServer;
 use serde_json::Value;
@@ -108,6 +109,10 @@ fn segments_match() {
             "uint" => protovcs::uint_segment(input.parse().unwrap()),
             "string" => protovcs::string_segment(input),
             "bool" => protovcs::bool_segment(input == "true"),
+            "hash" => {
+                let (buckets, value) = input.split_once(':').unwrap();
+                protovcs::hash_segment(value, buckets.parse().unwrap())
+            }
             "float64" => protovcs::float_string_for_test(input.parse().unwrap(), None),
             "float32" => {
                 let f: f32 = input.parse().unwrap();
@@ -147,6 +152,60 @@ fn canonical_bytes_match() {
             hex(&c["canonical"]),
             "{}",
             c["name"]
+        );
+    }
+}
+
+/// Groups, declared in proto2 and as DELIMITED in editions, are written with
+/// start and end tags.
+#[test]
+fn group_fields_encode_as_go_encodes_them() {
+    let groups = arr(&vectors()["groups"]);
+    assert!(!groups.is_empty());
+    for g in groups {
+        let pool = Arc::new(DescriptorPool::decode(&hex(&g["descriptors"])).unwrap());
+        let name = g["message"].as_str().unwrap();
+        let idx = pool.message_index(name).unwrap();
+        let m = DynamicMessage::decode(pool, idx, &hex(&g["input"])).unwrap();
+        assert_eq!(canonical_bytes(&m).unwrap(), hex(&g["canonical"]), "{name}");
+    }
+}
+
+/// An element put into a store replaces the one with the same identity, or is
+/// added, and leaves the item sorted exactly as the Go client leaves it.
+#[tokio::test]
+async fn put_element_leaves_the_items_go_leaves() {
+    let puts = arr(&vectors()["put_element"]);
+    assert!(!puts.is_empty());
+    for p in puts {
+        let what = p["name"].as_str().unwrap();
+        let s = Store::builder()
+            .transport(MemServer::new().transport())
+            .sealer(Arc::new(keyring()))
+            .layout(teststore())
+            .build()
+            .unwrap();
+        let main = s.branch("main");
+        main.write(
+            &CommitMeta::new("seed", "a", "a@example.com"),
+            &message(p["message"].as_str().unwrap()),
+        )
+        .await
+        .unwrap();
+        let mut part = main.checkout(Scope::nothing()).await.unwrap();
+        let elem = decode("nextgui.protovcs.testpb.Record", &hex(&p["element"]));
+        part.put_element(p["field"].as_str().unwrap(), elem)
+            .await
+            .unwrap();
+        let key = p["key"].as_str().unwrap();
+        let item = part
+            .items()
+            .find(|i| i.key == key)
+            .expect("the item is held");
+        assert_eq!(
+            canonical_bytes(&item.fragment).unwrap(),
+            hex(&p["canonical"]),
+            "{what}"
         );
     }
 }

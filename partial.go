@@ -38,8 +38,16 @@ func Nothing() Scope { return Scope{} }
 
 // Everything is the scope covering a whole store.
 func Everything() Scope {
-	return Scope{Ranges: []KeyRange{{From: "", To: ItemKey("￿")}}}
+	return Scope{Ranges: []KeyRange{{From: "", To: keyMax}}}
 }
+
+// keyMax is the upper bound of a range that runs to the end of the key space:
+// U+10FFFF, the largest Unicode scalar value, whose UTF-8 is F4 8F BF BF. Keys
+// compare by bytes, so it sorts after every character, including those outside
+// the Basic Multilingual Plane, whose UTF-8 begins with a byte that U+FFFF
+// (EF BF BF) sorts below. The Rust client uses the same bound, so both agree
+// on which keys a scope holds.
+const keyMax ItemKey = "\U0010FFFF"
 
 // Field returns the scope covering one split field entirely.
 //
@@ -48,7 +56,7 @@ func Everything() Scope {
 // [Compiled.ScopeForField], which knows the layout and answers correctly for
 // either kind.
 func Field(name string) Scope {
-	return Scope{Ranges: []KeyRange{{From: ItemKey(name), To: ItemKey(name + "/￿")}}}
+	return Prefix(name)
 }
 
 // Root returns the scope covering the root item alone.
@@ -65,10 +73,21 @@ func Root() Scope {
 	return Scope{Ranges: []KeyRange{{From: RootItemKey, To: RootItemKey}}}
 }
 
-// Prefix returns the scope covering every item key beginning with prefix, which
-// is how a caller asks for one shard value and everything under it.
+// Prefix returns the scope covering the item key prefix and every key under
+// prefix + "/", which is how a caller asks for one shard value and everything
+// under it.
+//
+// Whole segments only: Prefix("records/al") does not cover "records/alpha".
+// That takes two ranges, because keys such as "records/al-x" sort between
+// "records/al" and "records/al/". An empty prefix covers everything.
 func Prefix(prefix string) Scope {
-	return Scope{Ranges: []KeyRange{{From: ItemKey(prefix), To: ItemKey(prefix + "￿")}}}
+	if prefix == "" {
+		return Everything()
+	}
+	return Scope{Ranges: []KeyRange{
+		{From: ItemKey(prefix), To: ItemKey(prefix)},
+		{From: ItemKey(prefix + "/"), To: ItemKey(prefix+"/") + keyMax},
+	}}
 }
 
 // Between returns the scope covering a range of item keys, which is how a date
@@ -325,10 +344,22 @@ func (p *Partial) Get(key ItemKey) (Item, bool, error) {
 // which item an element belongs to without reading anything, and carrying an
 // untouched item across costs nothing. Reads are the operations that must stay
 // inside the scope, because their cost is not bounded.
+//
+// A key that names a directory of other items, or a key below another item,
+// is refused: one manifest entry names one thing. Put refuses it against the
+// items this handle holds, and Commit against the rest of the store.
 func (p *Partial) Put(item Item) error {
 	if got := item.Fragment.ProtoReflect().Descriptor().FullName(); got != p.store.layout.Descriptor().FullName() {
 		return fmt.Errorf("protovcs: item %q holds %s, not %s",
 			item.Key, got, p.store.layout.Descriptor().FullName())
+	}
+	for k := range p.items {
+		if strings.HasPrefix(string(k), string(item.Key)+"/") {
+			return fmt.Errorf("protovcs: item %q is also a directory holding other items, such as %q", item.Key, k)
+		}
+		if strings.HasPrefix(string(item.Key), string(k)+"/") {
+			return fmt.Errorf("protovcs: item %q would be below the item %q", item.Key, k)
+		}
 	}
 	p.items[item.Key] = item
 	p.scope = Union(p.scope, Scope{Ranges: []KeyRange{{From: item.Key, To: item.Key}}})
@@ -434,8 +465,44 @@ func (p *Partial) PutElement(ctx context.Context, field string, elem proto.Messa
 	if split == nil {
 		return fmt.Errorf("protovcs: layout %q does not split %q", p.store.layout.Layout().GetName(), field)
 	}
-	listAtOrCreate(item.Fragment.ProtoReflect(), split.path).
-		Append(protoreflect.ValueOfMessage(proto.Clone(elem).ProtoReflect()))
+	// Edited on a copy, so a refusal below leaves the held item as it was.
+	frag := proto.Clone(item.Fragment)
+	list := listAtOrCreate(frag.ProtoReflect(), split.path)
+	added := proto.Clone(elem).ProtoReflect()
+	if !replaceByIdentity(split, list, added) {
+		list.Append(protoreflect.ValueOfMessage(added))
+	}
+	// Sorted and checked exactly as Materialize does, so the item encodes the
+	// same whichever way it was built.
+	if list.Len() > 1 {
+		sortList(list, split.order)
+	}
+	if err := checkUnique(split, key, list); err != nil {
+		return err
+	}
 
-	return p.Put(item)
+	return p.Put(Item{Key: key, Fragment: frag})
+}
+
+// replaceByIdentity overwrites the element of list that has elem's identity,
+// and reports whether there was one. A split that declares no identity has
+// none to match, so elem is always added.
+func replaceByIdentity(split *compiledSplit, list protoreflect.List, elem protoreflect.Message) bool {
+	if len(split.identity) == 0 {
+		return false
+	}
+	v, present := valueAt(elem, split.identity)
+	if !present {
+		return false
+	}
+	last := split.identity[len(split.identity)-1]
+	want := scalarString(last, v)
+	for i := 0; i < list.Len(); i++ {
+		got, ok := valueAt(list.Get(i).Message(), split.identity)
+		if ok && scalarString(last, got) == want {
+			list.Set(i, protoreflect.ValueOfMessage(elem))
+			return true
+		}
+	}
+	return false
 }
