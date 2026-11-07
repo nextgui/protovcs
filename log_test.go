@@ -2,6 +2,7 @@ package protovcs_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"testing"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/nextgui/protovcs/memtransport"
 	testpb "github.com/nextgui/protovcs/proto/protovcs/testpb"
 	gen "github.com/nextgui/protovcs/proto/protovcs/testpb/teststorelayout"
+	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
 )
 
 // A store's history is the only record of why it looks the way it does, and
@@ -320,6 +322,44 @@ func TestTheServerSeesNoCommitText(t *testing.T) {
 		if bytesContain(raw, plaintext) {
 			t.Fatalf("the stored commit record contains %q in the clear", plaintext)
 		}
+	}
+}
+
+type dropCommitTransport struct {
+	protovcs.Transport
+	drop protovcs.CommitID
+}
+
+func (d *dropCommitTransport) GetCommits(ctx context.Context, from protovcs.CommitID, maxDepth uint32) ([]*pb.Commit, error) {
+	if from == d.drop {
+		return nil, nil
+	}
+	return d.Transport.GetCommits(ctx, from, maxDepth)
+}
+
+func TestLogFromReportsNoSuchCommitWhenAParentIsMissing(t *testing.T) {
+	ctx := context.Background()
+	mem := memtransport.New()
+	writer := newStore(t, mem, keyring(t))
+
+	first, err := writer.Branch("main").Write(ctx, meta("first"), &testpb.Store{
+		Manifest: &testpb.Manifest{SchemaVersion: 1},
+		Records:  records(1),
+	})
+	if err != nil {
+		t.Fatalf("first Write: %v", err)
+	}
+	if _, err := writer.Branch("main").Write(ctx, meta("second"), &testpb.Store{
+		Manifest: &testpb.Manifest{SchemaVersion: 1},
+		Records:  records(2),
+	}); err != nil {
+		t.Fatalf("second Write: %v", err)
+	}
+
+	reader := newStore(t, &dropCommitTransport{Transport: mem, drop: first}, keyring(t))
+	_, err = reader.Branch("main").Log(ctx, protovcs.LogOptions{})
+	if !errors.Is(err, protovcs.ErrNoSuchCommit) {
+		t.Fatalf("Log with missing parent returned %v, want ErrNoSuchCommit", err)
 	}
 }
 

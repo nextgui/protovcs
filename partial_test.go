@@ -483,3 +483,28 @@ func TestPutRefusesADirectoryKeyOrAKeyBelowAnItem(t *testing.T) {
 		t.Fatalf("the store holds %d records after the refused puts, want 30", n)
 	}
 }
+
+func TestPutAllowsReplacingAClearedItemWithAParentOrChildKey(t *testing.T) {
+	ctx := context.Background()
+	s := seeded(t, memtransport.New(), 30)
+	main := s.Branch("main")
+
+	part, err := main.Checkout(ctx, protovcs.Prefix("records/alpha"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, it := range part.Items() {
+		if err := part.Put(protovcs.Item{Key: it.Key, Fragment: &testpb.Store{}}); err != nil {
+			t.Fatalf("clearing %q: %v", it.Key, err)
+		}
+	}
+	if err := part.Put(protovcs.Item{
+		Key:      "records/alpha",
+		Fragment: &testpb.Store{Records: []*testpb.Record{{Id: "collapsed", Group: "alpha"}}},
+	}); err != nil {
+		t.Fatalf("Put at cleared directory prefix failed: %v", err)
+	}
+	if _, err := part.Commit(ctx, meta("collapse alpha")); err != nil {
+		t.Fatalf("Commit after replacing directory with item failed: %v", err)
+	}
+}

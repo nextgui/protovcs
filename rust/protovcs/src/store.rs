@@ -1039,22 +1039,7 @@ impl Store {
             let parent = info.parents.first().copied();
             out.push(info);
             let Some(parent) = parent else { break };
-            let mut commits = self.inner.transport.get_commits(parent, 1).await?;
-            if commits.is_empty() {
-                return Err(Error::new(
-                    ErrorKind::NoSuchChunk,
-                    format!("commit {parent}, the parent of {id}"),
-                ));
-            }
-            let next = commits.swap_remove(0);
-            let name = verified_name(&next)?;
-            if name != parent {
-                return Err(Error::new(
-                    ErrorKind::Tampered,
-                    format!("asked for commit {parent} and was sent {name}"),
-                ));
-            }
-            commit = next;
+            commit = self.commit_by_id(parent).await?;
         }
         Ok(out)
     }

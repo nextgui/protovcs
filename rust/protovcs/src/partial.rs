@@ -7,7 +7,7 @@ use buffa_descriptor::DynamicMessage;
 
 use crate::error::{Error, ErrorKind, Result};
 use crate::manifest::{ItemRef, LAST_KEY, ManifestReader, update_manifest};
-use crate::materialize::Item;
+use crate::materialize::{Item, has_anything};
 use crate::proto::Commit;
 use crate::store::{Branch, CommitMeta, Nodes};
 use crate::transport::{RefMove, RefState};
@@ -296,7 +296,10 @@ impl Partial {
             .store
             .layout()
             .check_type(&item.fragment, &item.key)?;
-        for k in self.items.keys() {
+        for (k, existing) in &self.items {
+            if !has_anything(&existing.fragment) {
+                continue;
+            }
             if k.starts_with(&format!("{}/", item.key)) {
                 return Err(Error::invalid(format!(
                     "protovcs: item {:?} is also a directory holding other items, such as {k:?}",

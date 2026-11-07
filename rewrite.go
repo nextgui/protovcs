@@ -347,6 +347,9 @@ func parentsFirst(heads []CommitID, known map[CommitID]*pb.Commit) ([]*pb.Commit
 				if err != nil {
 					return nil, err
 				}
+				if state[pid] == 1 {
+					return nil, fmt.Errorf("protovcs: commit %s is its own ancestor", pid)
+				}
 				if state[pid] == 0 {
 					stack = append(stack, frame{id: pid})
 				}

@@ -1511,22 +1511,11 @@ func (s *Store) LogFrom(ctx context.Context, start *pb.Commit, opts LogOptions) 
 		if len(info.Parents) == 0 {
 			break
 		}
-		commits, err := s.transport.GetCommits(ctx, info.Parents[0], 1)
+		next, err := s.commitByID(ctx, info.Parents[0])
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("%w, the parent of %s", err, id)
 		}
-		if len(commits) == 0 {
-			return nil, fmt.Errorf("%w: commit %s, the parent of %s",
-				ErrNoSuchChunk, info.Parents[0], id)
-		}
-		name, err := verifiedName(commits[0])
-		if err != nil {
-			return nil, err
-		}
-		if name != info.Parents[0] {
-			return nil, fmt.Errorf("%w: asked for commit %s and was sent %s", ErrTampered, info.Parents[0], name)
-		}
-		commit = commits[0]
+		commit = next
 	}
 	return out, nil
 }

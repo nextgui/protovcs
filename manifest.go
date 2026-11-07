@@ -582,8 +582,24 @@ func UpdateManifest(s Sealer, oldRoot ChunkID, changes map[ItemKey]*ItemRef,
 	}
 
 	// Walk each changed key down from the root, materialising the nodes on its
-	// path and applying the change at the leaf.
-	for key, ref := range changes {
+	// path and applying the change at the leaf. Deletions run before insertions
+	// so that replacing an item with a directory of items below it (or a
+	// directory of items with an item at its prefix) in one change set does not
+	// depend on map iteration order.
+	keys := make([]ItemKey, 0, len(changes))
+	for k := range changes {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		di, dj := changes[keys[i]] == nil, changes[keys[j]] == nil
+		if di != dj {
+			return di
+		}
+		return keys[i] < keys[j]
+	})
+
+	for _, key := range keys {
+		ref := changes[key]
 		segs := strings.Split(string(key), "/")
 		prefix := ""
 
@@ -622,13 +638,22 @@ func UpdateManifest(s Sealer, oldRoot ChunkID, changes map[ItemKey]*ItemRef,
 			return nil, ChunkID{}, fmt.Errorf(
 				"protovcs: item %q is also a directory holding other items", key)
 		}
-		if _, ok := loaded[join(prefix, leaf)]; ok && key != RootItemKey {
+		if child, ok := loaded[join(prefix, leaf)]; ok && key != RootItemKey && len(child.GetEntries()) > 0 {
 			return nil, ChunkID{}, fmt.Errorf(
 				"protovcs: item %q is also a directory holding other items", key)
 		}
 
 		if ref == nil {
 			removeEntry(node, leaf)
+			for cur := prefix; cur != "" && len(loaded[cur].GetEntries()) == 0; {
+				parentPrefix, seg := splitLast(cur)
+				parent := loaded[parentPrefix]
+				if parent == nil {
+					break
+				}
+				removeEntry(parent, seg)
+				cur = parentPrefix
+			}
 			continue
 		}
 		setEntry(node, &pb.ManifestNode_Entry{
@@ -683,7 +708,9 @@ func UpdateManifest(s Sealer, oldRoot ChunkID, changes map[ItemKey]*ItemRef,
 			return nil, ChunkID{}, fmt.Errorf("protovcs: node %q was rebuilt without its parent", prefix)
 		}
 		if len(node.GetEntries()) == 0 {
-			removeEntry(parent, segment)
+			if e := findEntry(parent, segment); e != nil && e.GetChild() != nil {
+				removeEntry(parent, segment)
+			}
 			continue
 		}
 		var total uint64

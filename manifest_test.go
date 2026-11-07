@@ -3,6 +3,10 @@ package protovcs
 import (
 	"fmt"
 	"testing"
+
+	"google.golang.org/protobuf/proto"
+
+	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
 )
 
 // dayItems builds the item set a day-batched layout produces over `years`,
@@ -189,6 +193,93 @@ func TestBuildManifestRefusesADuplicateItem(t *testing.T) {
 
 	if _, err := BuildManifest(s, items); err == nil {
 		t.Fatal("two items with the same key were accepted")
+	}
+}
+
+func TestUpdateManifestReplacesAnItemWithADirectoryAndBack(t *testing.T) {
+	s := testKeyring(t)
+	var parentID, childID ChunkID
+	copy(parentID[:], "parent-item")
+	copy(childID[:], "child-item")
+
+	parentRef := ItemRef{Key: "entries/2022", ID: parentID, Bytes: 100, Elements: 1}
+	childRef := ItemRef{Key: "entries/2022/01/01", ID: childID, Bytes: 200, Elements: 2}
+
+	initial, err := BuildManifest(s, []ItemRef{parentRef})
+	if err != nil {
+		t.Fatalf("BuildManifest(parent): %v", err)
+	}
+	store := map[ChunkID]*pb.ManifestNode{}
+	for _, n := range initial {
+		store[n.ID] = n.Node
+	}
+	oldRoot := initial[len(initial)-1].ID
+
+	fetch := func(prefix string, id ChunkID) (*pb.ManifestNode, error) {
+		n, ok := store[id]
+		if !ok {
+			return nil, fmt.Errorf("missing node %q (%s)", prefix, id)
+		}
+		return proto.Clone(n).(*pb.ManifestNode), nil
+	}
+
+	// Replace the item at "entries/2022" with a child at "entries/2022/01/01".
+	toChild, childRoot, err := UpdateManifest(s, oldRoot, map[ItemKey]*ItemRef{
+		"entries/2022":       nil,
+		"entries/2022/01/01": &childRef,
+	}, fetch)
+	if err != nil {
+		t.Fatalf("UpdateManifest(item -> directory): %v", err)
+	}
+	wantChild, err := BuildManifest(s, []ItemRef{childRef})
+	if err != nil {
+		t.Fatalf("BuildManifest(child): %v", err)
+	}
+	if wantRoot := wantChild[len(wantChild)-1].ID; childRoot != wantRoot {
+		t.Fatalf("root after item -> directory is %s, want %s", childRoot, wantRoot)
+	}
+
+	for _, n := range toChild {
+		store[n.ID] = n.Node
+	}
+
+	// Replace the child at "entries/2022/01/01" back with an item at "entries/2022".
+	_, backRoot, err := UpdateManifest(s, childRoot, map[ItemKey]*ItemRef{
+		"entries/2022/01/01": nil,
+		"entries/2022":       &parentRef,
+	}, fetch)
+	if err != nil {
+		t.Fatalf("UpdateManifest(directory -> item): %v", err)
+	}
+	if backRoot != oldRoot {
+		t.Fatalf("root after directory -> item is %s, want %s", backRoot, oldRoot)
+	}
+}
+
+func TestParentsFirstOrdersDiamondAndRejectsCycles(t *testing.T) {
+	var a, b, c, d CommitID
+	a[0], b[0], c[0], d[0] = 1, 2, 3, 4
+
+	diamond := map[CommitID]*pb.Commit{
+		a: {Id: a.Bytes()},
+		b: {Id: b.Bytes(), Parents: [][]byte{a.Bytes()}},
+		c: {Id: c.Bytes(), Parents: [][]byte{a.Bytes()}},
+		d: {Id: d.Bytes(), Parents: [][]byte{a.Bytes(), b.Bytes(), c.Bytes()}},
+	}
+	ordered, err := parentsFirst([]CommitID{d}, diamond)
+	if err != nil {
+		t.Fatalf("parentsFirst(diamond): %v", err)
+	}
+	if len(ordered) != 4 {
+		t.Fatalf("parentsFirst(diamond) returned %d commits, want 4", len(ordered))
+	}
+
+	cyclic := map[CommitID]*pb.Commit{
+		a: {Id: a.Bytes(), Parents: [][]byte{b.Bytes()}},
+		b: {Id: b.Bytes(), Parents: [][]byte{a.Bytes()}},
+	}
+	if _, err := parentsFirst([]CommitID{a}, cyclic); err == nil {
+		t.Fatal("parentsFirst accepted a 2-commit cycle")
 	}
 }
 

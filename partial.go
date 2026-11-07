@@ -353,7 +353,10 @@ func (p *Partial) Put(item Item) error {
 		return fmt.Errorf("protovcs: item %q holds %s, not %s",
 			item.Key, got, p.store.layout.Descriptor().FullName())
 	}
-	for k := range p.items {
+	for k, existing := range p.items {
+		if !hasAnything(existing.Fragment.ProtoReflect()) {
+			continue
+		}
 		if strings.HasPrefix(string(k), string(item.Key)+"/") {
 			return fmt.Errorf("protovcs: item %q is also a directory holding other items, such as %q", item.Key, k)
 		}

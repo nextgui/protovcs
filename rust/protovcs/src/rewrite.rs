@@ -228,6 +228,7 @@ fn parents_first(heads: &[CommitId], known: &HashMap<CommitId, Commit>) -> Resul
                 continue;
             }
             if expanded {
+                visiting.remove(&id);
                 done.insert(id);
                 out.push(c.clone());
                 continue;
@@ -240,11 +241,93 @@ fn parents_first(heads: &[CommitId], known: &HashMap<CommitId, Commit>) -> Resul
             stack.push((id, true));
             for raw in &c.parents {
                 let pid = CommitId::from_bytes(raw)?;
-                if !visiting.contains(&pid) && !done.contains(&pid) {
+                if visiting.contains(&pid) {
+                    return Err(Error::invalid(format!(
+                        "protovcs: commit {pid} is its own ancestor"
+                    )));
+                }
+                if !done.contains(&pid) {
                     stack.push((pid, false));
                 }
             }
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parents_first_orders_diamond_and_rejects_cycles() {
+        let mut a_bytes = [0u8; 32];
+        let mut b_bytes = [0u8; 32];
+        let mut c_bytes = [0u8; 32];
+        let mut d_bytes = [0u8; 32];
+        a_bytes[0] = 1;
+        b_bytes[0] = 2;
+        c_bytes[0] = 3;
+        d_bytes[0] = 4;
+        let a = CommitId::from_bytes(&a_bytes).unwrap();
+        let b = CommitId::from_bytes(&b_bytes).unwrap();
+        let c = CommitId::from_bytes(&c_bytes).unwrap();
+        let d = CommitId::from_bytes(&d_bytes).unwrap();
+
+        let mut diamond = HashMap::new();
+        diamond.insert(
+            a,
+            Commit {
+                id: a_bytes.to_vec(),
+                ..Default::default()
+            },
+        );
+        diamond.insert(
+            b,
+            Commit {
+                id: b_bytes.to_vec(),
+                parents: vec![a_bytes.to_vec()],
+                ..Default::default()
+            },
+        );
+        diamond.insert(
+            c,
+            Commit {
+                id: c_bytes.to_vec(),
+                parents: vec![a_bytes.to_vec()],
+                ..Default::default()
+            },
+        );
+        diamond.insert(
+            d,
+            Commit {
+                id: d_bytes.to_vec(),
+                parents: vec![a_bytes.to_vec(), b_bytes.to_vec(), c_bytes.to_vec()],
+                ..Default::default()
+            },
+        );
+
+        let ordered = parents_first(&[d], &diamond).unwrap();
+        assert_eq!(ordered.len(), 4);
+
+        let mut cyclic = HashMap::new();
+        cyclic.insert(
+            a,
+            Commit {
+                id: a_bytes.to_vec(),
+                parents: vec![b_bytes.to_vec()],
+                ..Default::default()
+            },
+        );
+        cyclic.insert(
+            b,
+            Commit {
+                id: b_bytes.to_vec(),
+                parents: vec![a_bytes.to_vec()],
+                ..Default::default()
+            },
+        );
+        let err = parents_first(&[a], &cyclic).unwrap_err();
+        assert!(err.to_string().contains("is its own ancestor"), "{err}");
+    }
 }
