@@ -1,5 +1,6 @@
 load("@rules_go//go:def.bzl", "go_library")
 load("@rules_go//go:def.bzl", "go_test")
+load("@bazel_lib//lib:write_source_files.bzl", "write_source_files")
 
 package(default_visibility = ["//visibility:public"])
 
@@ -82,3 +83,40 @@ go_test(
 
 
 exports_files(["go.mod"])
+
+# Golden vectors for the Rust client in rust/, which its tests must reproduce
+# byte for byte. This test writes them, and update_golden's test fails when the
+# checked-in copy is stale. Update with bazel run //:update_golden.
+go_test(
+    name = "golden_vectors_gen",
+    size = "small",
+    srcs = [
+        "golden_export_test.go",
+        "golden_test.go",
+    ],
+    embed = [":protovcs"],
+    deps = [
+        "//memtransport",
+        "//proto/protovcs/testpb",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+genrule(
+    name = "golden_vectors",
+    testonly = True,
+    outs = ["golden_vectors.json"],
+    cmd = "$(execpath :golden_vectors_gen) -test.run=TestGoldenVectors -golden_out=$@ > /dev/null",
+    tools = [":golden_vectors_gen"],
+)
+
+write_source_files(
+    name = "update_golden",
+    testonly = True,
+    files = {"testdata/golden/vectors.json": ":golden_vectors"},
+)
