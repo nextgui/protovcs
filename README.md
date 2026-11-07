@@ -141,6 +141,8 @@ A commit made from a partial checkout is a complete version: items outside the c
 3. A commit names a tree of chunks and its parent commits. A branch points at a commit and moves by compare-and-swap.
 4. The server stores chunks, commits and branches. It enforces quotas and access, and collects chunks no commit reaches. It never holds a key.
 
+The [design document](docs/design.md) explains each part and the reasons for it. The [format specification](docs/format.md) defines the bytes, for anyone writing another client.
+
 ## Security model
 
 - **The server can't read stored data.** It holds sealed chunks, sealed commit payloads and keyed names.

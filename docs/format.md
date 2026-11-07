@@ -5,16 +5,76 @@
 
 This document specifies the bytes protovcs writes and reads: how a message
 becomes items, how items, manifest nodes, schemas and commits are encoded,
-named and sealed, and what a reader checks. A second implementation that
-follows it produces the same chunk ids and commit ids as the Go
-implementation in this repository. The reasons behind each rule are in the
-[design document](design.md) and are not repeated here.
+named and sealed, and what a reader checks. An implementation that follows it
+produces the same chunk ids and commit ids as the Go client in this repository.
+The Rust client in `rust/` is the second implementation. The reasons behind
+each rule are in the [design document](design.md) and are not repeated here.
 
 Each rule names the source file it is derived from. Where the golden vector
 file `testdata/golden/vectors.json` has a test for a rule, the rule names the
-vector by its JSON path. That file and the `golden_test.go` that writes it
-arrive with the Rust client. [Vector coverage](#vector-coverage) lists the
-rules that have no vector yet.
+vector by its JSON path. `golden_test.go` writes that file, and both clients'
+tests check it. [Vector coverage](#vector-coverage) lists the rules that have
+no vector yet.
+
+## Overview
+
+A store holds the history of one protobuf message, called the root message.
+Its type is set by a layout, which also says how the message is divided for
+storage. The server keeps three kinds of object for each store: chunks,
+commits and refs. Everything a client encrypts goes into a chunk or into a
+commit's payload.
+
+| Object | What it holds | Stored as | Readable by the server |
+|---|---|---|---|
+| root key | the 32-byte secret every other key is derived from | not stored; clients hold it | no |
+| item | one piece of the root message: the fields no split takes, or the elements of a split field that share an item key | a chunk | no |
+| manifest node | one level of a tree that maps item keys to item chunks, one path segment at a time | a chunk | no |
+| schema chunk | the layout and the protobuf descriptors the writer used | a chunk | no |
+| commit record | the commit's id, its parents, the chunks it added, and its payload | a commit | yes, except the payload |
+| commit payload | the manifest root, the schema chunk, the branch name, the time and the commit message | sealed inside the record | no |
+| ref | a branch: a keyed hash of its name, and the commit it points at | a ref | yes; the name is hashed |
+
+```mermaid
+flowchart TD
+  ref["ref"] -->|commit| record["commit record"]
+  record -->|parents| parent["parent commit records"]
+  record -->|payload, sealed| payload["commit payload"]
+  payload -->|manifest_root| root["root manifest node"]
+  payload -->|schema_chunk| schema["schema chunk"]
+  root -->|child| node["manifest node"]
+  root -->|item| item["item"]
+  node -->|item| item
+```
+*Each box is an object from the table above. Each arrow is an id stored in the object it leaves, labelled with the field that holds it.*
+
+Every object is named by a hash of its contents, except a ref, which is named
+by a hash of the branch name.
+
+- A chunk id is a keyed hash of the chunk's role, its key and its canonical
+  bytes.
+- A commit id is an unkeyed SHA-256 of the record, with the id and payload left
+  out.
+- A ref name is a keyed hash of the branch name.
+
+Equal contents give equal names, so a client never uploads a chunk the store
+already holds. That works across implementations only when they encode the
+same value to the same bytes. For that reason the canonical encoding comes
+first below.
+
+The rest of this document follows the order in which a client writes a new
+version:
+
+1. Encode values canonically ([Canonical encoding](#canonical-encoding)).
+2. Divide the root message into items ([Items and item keys](#items-and-item-keys)).
+3. Derive keys, then name and seal each chunk ([Key derivation](#key-derivation),
+   [Chunk ids](#chunk-ids), [Sealed envelope](#sealed-envelope)).
+4. Build the manifest tree over the items ([Manifest nodes](#manifest-nodes)).
+5. Name the schema ([Schema chunk](#schema-chunk)).
+6. Write the commit ([Commits](#commits)), then move the branch to it
+   ([Branches](#branches)).
+
+[What a reader verifies](#what-a-reader-verifies) covers the opposite
+direction.
 
 ## Conventions
 
@@ -49,8 +109,8 @@ refuses any other length ([types.go](../types.go)).
 
 The canonical encoding is the one byte string protovcs produces for a message.
 Items, manifest nodes, schema chunks, commit records, commit payloads and commit
-`details` are all encoded this way. The output is protobuf wire format, except
-for groups, noted below. Source: [canonical.go](../canonical.go).
+`details` are all encoded this way. The output is ordinary protobuf wire
+format, so any protobuf parser reads it. Source: [canonical.go](../canonical.go).
 
 ### Which fields are written
 
@@ -100,13 +160,13 @@ fields at 12, 50 and 99, and an unknown record placed before a known one.
 | `double` | tag (wire type 1), the IEEE 754 binary64 bits, little-endian |
 | `string`, `bytes` | tag (wire type 2), `uvarint(length)`, the bytes; strings are not checked for valid UTF-8 |
 | message | tag (wire type 2), `uvarint(length)`, the canonical encoding of the message |
-| group | tag (wire type 2), `uvarint(length)`, the canonical encoding of the group's message |
+| group | start-group tag (wire type 3), the canonical encoding of the group's message, end-group tag (wire type 4) |
 
 NaN payloads are not normalised: the bits written are the bits held.
 
-A group is written as a length-delimited record, not between start and end
-tags. A standard protobuf parser does not read that record as the group field.
-No message in this repository uses groups.
+A group is a proto2 `group` field or an editions field with
+`message_encoding = DELIMITED`. Both use the start and end tags. Vector:
+`groups`, with one message of each kind.
 
 ### Repeated fields
 
@@ -188,8 +248,9 @@ segment. The transform decides how.
 | `YEAR` | `YYYY` |
 | `HASH` | `b` followed by the bucket number, zero-padded to the number of decimal digits in `buckets − 1` |
 
-**Dates.** `YYYY` is the year in decimal padded with zeros to at least four
-characters, `MM` and `DD` to two. A year above 9999 takes more digits. The
+**Dates.** `YYYY` is the year in four decimal digits, `MM` and `DD` in two,
+each padded with zeros. A year outside 0–9999 is refused, because no other
+width keeps keys in date order. The
 field must be either a message with `int32` fields named `year`, `month` and
 `day`, or `google.protobuf.Timestamp`. For the first, a month outside 1–12 or a
 day outside 1–31 is refused. For a timestamp, the date is the proleptic
@@ -209,15 +270,15 @@ zero. With 16 buckets, the segments run `b00` to `b15`. Vector:
 | `string` | the bytes, with each `/` (0x2F), `%` (0x25), byte below 0x20, and 0x7F replaced by `%` and two uppercase hex digits |
 | `bytes` | the same escaping, applied to the raw bytes |
 | `bool` | `true` or `false` |
-| signed integers and `enum` | value ≥ 0: `0` then the value in 19 decimal digits; value < 0: `-` then the absolute value in 19 decimal digits |
+| signed integers and `enum` | value ≥ 0: `0` then the value in 19 decimal digits; value < 0: `-` then `value + 2⁶³` in 19 decimal digits |
 | unsigned integers | the value in 20 decimal digits |
 | `float`, `double` | the shortest decimal that rounds back to the same value at the field's width; exponent form `d.ddde±XX` with at least two exponent digits when the decimal exponent is below −4 or at least 6; `NaN`, `+Inf`, `-Inf` |
 
-Bytes at or above 0x80 are not escaped. The signed form sorts negative numbers
-in order of increasing magnitude, so `-1` sorts before `-2`. The most negative
-64-bit integer has no 19-digit absolute value, and the Go implementation writes
-`--9223372036854775808` for it. Vectors: `segments[kind=int]`, `uint`,
-`string`, `float64`, `float32`, `bool`.
+Bytes at or above 0x80 are not escaped. The signed form is 20 characters and
+sorts in numeric order: `-` sorts before `0`, and adding 2⁶³ maps the negative
+values onto 0 to 2⁶³ − 1 in order. `-1` is `-9223372036854775807` and the
+most negative 64-bit value is `-0000000000000000000`. Vectors:
+`segments[kind=int]`, `uint`, `string`, `float64`, `float32`, `bool`, `hash`.
 
 ### Element order within an item
 
@@ -238,6 +299,9 @@ refused.
 
 Floating-point order keys compare as text, not as numbers. Vector:
 `layouts[name=yearly]` orders by `score`, a `double`, then by `id`.
+`put_element` checks that an element added to an existing item gives the same
+bytes as building the item whole, including when it replaces an element with
+the same identity.
 
 ### Item bytes and counts
 
@@ -519,10 +583,10 @@ record whose non-empty `id` differs ([server/server.go](../server/server.go)).
 
 | Rule | Vectors |
 |---|---|
-| canonical encoding | `canonical` |
+| canonical encoding | `canonical`, `groups` |
 | root item, split items, item keys | `layouts[*].items`, over four layouts and three messages |
 | segment forms | `segments`, `dates` |
-| element order within an item | `layouts[*].items[*].canonical` |
+| element order within an item | `layouts[*].items[*].canonical`, `put_element` |
 | key derivation | `keys` |
 | chunk ids | `chunk_ids` |
 | sealed envelope | `seals` |
@@ -541,12 +605,13 @@ These rules have no vector yet:
 
 - Canonical encoding of oneofs set to a zero value, proto3 `optional` fields,
   maps with non-string keys, `float`, `sint`, `fixed` and `bool` fields, NaN
-  and `-0.0`, groups, and unknown group records.
+  and `-0.0`, and unknown group records.
 - An absent value under the `IDENTITY` or `HASH` transform, a timestamp shard
   key, and an `enum`, `bool`, `bytes` or unsigned identity shard key inside a
   layout.
-- Refusals: a date with an invalid month or day, duplicate identities in one
-  item, a key that is also a directory, and a node over 65,536 entries.
+- Refusals: a date with an invalid month or day or a year outside 0–9999,
+  duplicate identities in one item, a key that is also a directory, and a node
+  over 65,536 entries.
 - Everything under [What a reader verifies](#what-a-reader-verifies): there are
   no vectors for a tampered chunk, a chunk opened under the wrong id, an unknown
   version byte, a short envelope, or a commit whose id does not match its

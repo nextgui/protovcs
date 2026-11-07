@@ -10,8 +10,8 @@ branch pointers, and holds no key. Commits and branches work as they do in git,
 and a client can read or write part of the message without fetching the rest.
 
 This document describes how protovcs works and why. The [README](../README.md)
-shows how to use it. A separate `docs/format.md` will define the byte-level
-format, so formats appear here only as far as the design needs them.
+shows how to use it. The [format specification](format.md) defines the bytes,
+so formats appear here only as far as the design needs them.
 
 ## Terms
 
@@ -77,12 +77,12 @@ because the splits cannot serve it as a key range. Some shapes are also refused:
   repeated fields, so two fragments of one outer element would come back as two
   elements. Nested collections are flattened instead, with each inner element
   carrying its outer element's id.
-- **Map fields cannot be split yet.** When they can, the map key will be the
-  shard key, because protobuf guarantees it is unique.
+- **Map fields cannot be split.** Support would use the map key as the shard
+  key, because protobuf guarantees it is unique.
 - **An oversized item is not subdivided.** An item over `split_byte_count` is
   reported, and one over `max_item_bytes` is refused. A sub-key based on an
   element's neighbours would break the first rule above, and one based on the
-  element alone is just another shard key component. A single element over the
+  element alone would be one more shard key component. A single element over the
   ceiling is allowed, bounded by the server's `max_chunk_bytes`.
 
 The `identity` field option in
