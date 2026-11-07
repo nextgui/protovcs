@@ -40,6 +40,12 @@ jobs:
         run: go vet ./...
       - name: go test ./...
         run: go test ./...
+      # A release's tarball must be byte-identical however often it is built.
+      - name: Release tarball is reproducible
+        run: |
+          go run ./internal/cmd/releasetar -version 0.0.0 -out "$RUNNER_TEMP/a"
+          go run ./internal/cmd/releasetar -version 0.0.0 -out "$RUNNER_TEMP/b"
+          cmp "$RUNNER_TEMP/a/protovcs-0.0.0.tar.gz" "$RUNNER_TEMP/b/protovcs-0.0.0.tar.gz"
 
   # idbcache keeps chunks in IndexedDB, which only a browser has.
   browser:

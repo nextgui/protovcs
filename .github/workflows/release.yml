@@ -1,0 +1,49 @@
+name: Release
+
+# Cuts a release from the commit this is run on. Start it from the Actions tab
+# with the version to release, such as 0.0.1. See RELEASING.md.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, without the v, such as 0.0.1"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      # The tarball's bytes depend on the Go version that builds releasetar,
+      # so it is pinned exactly rather than to a minor version.
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25.14"
+      - name: Check the version
+        run: ./internal/release/check-version.sh "$VERSION"
+      - name: Build the tarball twice and compare
+        run: |
+          go run ./internal/cmd/releasetar -version "$VERSION" -out dist
+          go run ./internal/cmd/releasetar -version "$VERSION" -out dist-again
+          cmp dist/protovcs-"$VERSION".tar.gz dist-again/protovcs-"$VERSION".tar.gz
+      - name: Tag the commit
+        run: |
+          git tag "v$VERSION" "$GITHUB_SHA"
+          git push origin "v$VERSION"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v$VERSION" \
+            dist/protovcs-"$VERSION".tar.gz \
+            dist/protovcs-"$VERSION".tar.gz.sha256 \
+            --title "v$VERSION" \
+            --generate-notes \
+            --verify-tag
