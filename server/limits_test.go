@@ -382,3 +382,43 @@ func TestCommitBytesTodayStartAgainTheNextDay(t *testing.T) {
 		t.Fatalf("a commit after midnight in Los Angeles: %v", err)
 	}
 }
+
+func TestPutCommitDoesNotDoubleCountItsOwnReservationAgainstMaxBytes(t *testing.T) {
+	ctx := context.Background()
+	s, _ := newServer(t, &pb.Quota{MaxBytes: 1000})
+
+	c := chunk(1, 600)
+	r, err := s.BeginWrite(ctx, storeID, 1, 600)
+	if err != nil {
+		t.Fatalf("BeginWrite: %v", err)
+	}
+	if err := s.PutChunks(ctx, storeID, r.ID, []protovcs.SealedChunk{c}); err != nil {
+		t.Fatalf("PutChunks: %v", err)
+	}
+	if _, err := s.PutCommit(ctx, storeID, r.ID, commitNumbered(1, c.ID)); err != nil {
+		t.Fatalf("PutCommit with 600-byte chunk under 1000-byte limit failed: %v", err)
+	}
+}
+
+type failPutReservationStorage struct {
+	*server.MemStorage
+}
+
+func (f failPutReservationStorage) PutReservation(ctx context.Context, storeID string, r *server.Reservation) error {
+	return errors.New("put reservation failed")
+}
+
+func TestBeginWriteRefundsQuotaWhenPutReservationFails(t *testing.T) {
+	ctx := context.Background()
+	mem := server.NewMemStorage()
+	s := server.New(failPutReservationStorage{mem})
+	if _, err := s.CreateStore(ctx, &pb.CreateStoreRequest{StoreId: storeID, Quota: &pb.Quota{MaxBytes: 1000}}); err != nil {
+		t.Fatalf("CreateStore: %v", err)
+	}
+	if _, err := s.BeginWrite(ctx, storeID, 1, 600); err == nil {
+		t.Fatal("BeginWrite succeeded when PutReservation failed")
+	}
+	if u := usage(t, s); u.GetReservedBytes() != 0 || u.GetReservedObjects() != 0 {
+		t.Fatalf("failed BeginWrite left %d reserved bytes and %d reserved objects", u.GetReservedBytes(), u.GetReservedObjects())
+	}
+}

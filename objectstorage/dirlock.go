@@ -139,11 +139,11 @@ func (o lockOwner) stale() bool {
 	if o.pid <= 0 {
 		return false
 	}
-	if o.pid == os.Getpid() {
-		return o.token != processToken
-	}
 	if host, err := os.Hostname(); o.host != "" && (err != nil || o.host != host) {
 		return false
+	}
+	if o.pid == os.Getpid() {
+		return o.token != processToken
 	}
 	// Signal 0 checks that the process exists without signalling it. EPERM
 	// means it exists and belongs to another user.

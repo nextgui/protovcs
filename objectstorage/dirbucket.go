@@ -460,6 +460,9 @@ func (b *DirBucket) DeleteIfGeneration(ctx context.Context, key string, expected
 }
 
 func (b *DirBucket) Delete(ctx context.Context, key string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
 	err := os.Remove(b.path(key))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil
@@ -468,7 +471,14 @@ func (b *DirBucket) Delete(ctx context.Context, key string) error {
 }
 
 func (b *DirBucket) List(ctx context.Context, prefix string) ([]ObjectInfo, error) {
-	base := b.path(prefix)
+	base := b.root
+	if prefix != "" {
+		if strings.HasSuffix(prefix, "/") {
+			base = b.path(prefix)
+		} else {
+			base = filepath.Dir(b.path(prefix))
+		}
+	}
 
 	var out []ObjectInfo
 	err := filepath.WalkDir(base, func(path string, d os.DirEntry, err error) error {
@@ -492,6 +502,10 @@ func (b *DirBucket) List(ctx context.Context, prefix string) ([]ObjectInfo, erro
 		if err != nil {
 			return err
 		}
+		key := filepath.ToSlash(rel)
+		if !strings.HasPrefix(key, prefix) {
+			return nil
+		}
 		info, err := d.Info()
 		if err != nil {
 			return err
@@ -501,7 +515,7 @@ func (b *DirBucket) List(ctx context.Context, prefix string) ([]ObjectInfo, erro
 			size = 0
 		}
 		out = append(out, ObjectInfo{
-			Key:     filepath.ToSlash(rel),
+			Key:     key,
 			Size:    size,
 			Updated: info.ModTime().UTC(),
 		})

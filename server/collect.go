@@ -498,6 +498,9 @@ func (s *Server) reconcileOnce(ctx context.Context, storeID string) (before, aft
 		return nil, nil, err
 	}
 	before = store.GetUsage()
+	if store.GetState() == pb.Store_STATE_PURGING {
+		return before, before, nil
+	}
 
 	chunks, _, err := s.listChunkInfo(ctx, storeID)
 	if err != nil {
