@@ -7,7 +7,7 @@
 #
 # Crate versions come from Cargo.lock, so Cargo and Bazel build the same ones.
 
-module(name = "protovcs_rust", version = "0.1.0")
+module(name = "protovcs_rust", version = "0.0.1")
 
 # The protos and the golden vectors. The override applies only when this is
 # the root module, as it is when building here.

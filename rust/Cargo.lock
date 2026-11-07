@@ -848,7 +848,7 @@ dependencies = [
 
 [[package]]
 name = "protovcs"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "aes-gcm",
  "buffa",
@@ -880,7 +880,7 @@ dependencies = [
 
 [[package]]
 name = "protovcs-idbcache"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "futures",
  "js-sys",
@@ -892,7 +892,7 @@ dependencies = [
 
 [[package]]
 name = "protovcs-memtransport"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "connectrpc",
  "futures",
@@ -901,7 +901,7 @@ dependencies = [
 
 [[package]]
 name = "protovcs-proto"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "buffa",
  "buffa-descriptor",
