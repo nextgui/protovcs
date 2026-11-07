@@ -269,6 +269,11 @@ type Bucket interface {
 	// because a collector that raced another collector should not fail.
 	Delete(ctx context.Context, key string) error
 
+	// DeleteIfGeneration removes an object only if it is at the generation
+	// given. A mismatch, including an object that is not there, returns
+	// [ErrGenerationMismatch] and removes nothing.
+	DeleteIfGeneration(ctx context.Context, key string, expected int64) error
+
 	// List returns every object under a prefix.
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 

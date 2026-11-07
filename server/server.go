@@ -695,6 +695,28 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 		}
 	}
 
+	// A commit may not add a chunk marked for collection. Its writer was told
+	// the chunk was present before the mark, and did not upload it. Starting
+	// the write again uploads it, which takes it back.
+	//
+	// Checked before presence, not after. A run can claim a marked chunk,
+	// delete it and drop its mark between two checks, and in the other order a
+	// chunk seen present and then no longer marked would be committed after it
+	// was deleted.
+	condemned, err := s.storage.GetCondemned(ctx, storeID)
+	if err != nil {
+		return protovcs.CommitID{}, err
+	}
+	for _, raw := range commit.GetAdded() {
+		id, err := protovcs.ChunkIDFromBytes(raw)
+		if err != nil {
+			return protovcs.CommitID{}, err
+		}
+		if _, marked := condemned.Chunks[id]; marked {
+			return protovcs.CommitID{}, errCollecting(id)
+		}
+	}
+
 	// Every chunk the commit adds must be present, or a reachable commit would
 	// name something that is not there — which is a corrupt store rather than
 	// an incomplete one.
@@ -709,23 +731,6 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 		}
 		if !has {
 			return protovcs.CommitID{}, fmt.Errorf("protovcs: commit adds chunk %s, which was never stored", id)
-		}
-	}
-
-	// Nor may it add a chunk marked for collection. Its writer was told the
-	// chunk was present before the mark, and did not upload it. Starting the
-	// write again uploads it, which takes it back.
-	condemned, err := s.storage.GetCondemned(ctx, storeID)
-	if err != nil {
-		return protovcs.CommitID{}, err
-	}
-	for _, raw := range commit.GetAdded() {
-		id, err := protovcs.ChunkIDFromBytes(raw)
-		if err != nil {
-			return protovcs.CommitID{}, err
-		}
-		if _, marked := condemned.Chunks[id]; marked {
-			return protovcs.CommitID{}, errCollecting(id)
 		}
 	}
 	for _, raw := range commit.GetParents() {
@@ -935,6 +940,16 @@ func (s *Server) UpdateRef(ctx context.Context, storeID string, name []byte, com
 		}
 	}
 
+	// A move can make chunks reachable again that collection has marked,
+	// such as a branch forced back to an old commit. Taking them back before
+	// the move means a run cannot delete them after it; one already claimed
+	// refuses the move.
+	if !commit.IsZero() {
+		if err := s.takeBackReachable(ctx, storeID, name, commit); err != nil {
+			return protovcs.RefState{}, err
+		}
+	}
+
 	// Compare-and-swap is checked first, and by the storage layer, so that a
 	// writer which simply lost a race is told exactly that. The ancestry check
 	// below would otherwise report a lost race as a non-fast-forward, and a
@@ -964,6 +979,52 @@ func (s *Server) UpdateRef(ctx context.Context, storeID string, name []byte, com
 		return state, err
 	}
 	return state, nil
+}
+
+// takeBackReachable removes from the condemned set every chunk that moving
+// branch name to commit would make reachable, and fails if a run has already
+// claimed one. Nothing is walked while nothing is marked, which is the common
+// case.
+func (s *Server) takeBackReachable(ctx context.Context, storeID string, name []byte, commit protovcs.CommitID) error {
+	condemned, err := s.storage.GetCondemned(ctx, storeID)
+	if err != nil || len(condemned.Chunks) == 0 {
+		return err
+	}
+	var have []protovcs.CommitID
+	refs, err := s.storage.ListRefs(ctx, storeID)
+	if err != nil {
+		return err
+	}
+	for _, r := range refs {
+		if string(r.Name) == string(name) {
+			have = append(have, r.Commit)
+		}
+	}
+	ids, _, err := s.MissingBetween(ctx, storeID, have, commit)
+	if err != nil {
+		return err
+	}
+	var marked []protovcs.ChunkID
+	for _, id := range ids {
+		if _, ok := condemned.Chunks[id]; ok {
+			marked = append(marked, id)
+		}
+	}
+	if len(marked) == 0 {
+		return nil
+	}
+	_, err = s.storage.UpdateCondemned(ctx, storeID, func(c *Condemned) error {
+		for _, id := range marked {
+			if c.Chunks[id].Deleting {
+				return errCollecting(id)
+			}
+		}
+		for _, id := range marked {
+			delete(c.Chunks, id)
+		}
+		return nil
+	})
+	return err
 }
 
 // MissingBetween returns the chunk ids a client holding `have` might not hold

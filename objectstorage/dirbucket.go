@@ -200,7 +200,7 @@ func (b *DirBucket) Put(ctx context.Context, key string, data []byte) error {
 			return err
 		}
 
-		tmp, err := writeTemp(path, framed(gen+1, data))
+		tmp, err := writeTemp(path, framed(nextGeneration(gen), data))
 		if err != nil {
 			return err
 		}
@@ -257,7 +257,7 @@ func (b *DirBucket) PutIfGeneration(ctx context.Context, key string, data []byte
 		return 0, ErrGenerationMismatch
 	}
 
-	next := gen + 1
+	next := nextGeneration(gen)
 	if err := writeFile(b.path(key), framed(next, data)); err != nil {
 		return 0, err
 	}
@@ -384,7 +384,7 @@ func (b *DirBucket) Compose(ctx context.Context, dest string, sources []string, 
 		joined = append(joined, data...)
 	}
 
-	next := gen + 1
+	next := nextGeneration(gen)
 	if err := writeFile(b.path(dest), framed(next, joined)); err != nil {
 		return 0, err
 	}
@@ -429,6 +429,34 @@ func (b *DirBucket) Stat(ctx context.Context, key string) (ObjectInfo, error) {
 		Updated:    info.ModTime().UTC(),
 		Generation: int64(binary.BigEndian.Uint64(header[:])),
 	}, nil
+}
+
+// nextGeneration is the generation of a write over an object at gen, or of a
+// new object when gen is 0.
+//
+// A timestamp rather than gen+1, as Cloud Storage's are, so that an object
+// deleted and written again does not start over at a generation an earlier
+// holder of a token for it may still have.
+func nextGeneration(gen int64) int64 {
+	next := time.Now().UnixNano()
+	if next <= gen {
+		next = gen + 1
+	}
+	return next
+}
+
+func (b *DirBucket) DeleteIfGeneration(ctx context.Context, key string, expected int64) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	_, gen, exists, err := b.read(key)
+	if err != nil {
+		return err
+	}
+	if !exists || gen != expected {
+		return ErrGenerationMismatch
+	}
+	return os.Remove(b.path(key))
 }
 
 func (b *DirBucket) Delete(ctx context.Context, key string) error {

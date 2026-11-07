@@ -32,6 +32,7 @@ go_test(
         "endtoend_test.go",
         "guards_test.go",
         "limits_test.go",
+        "races_test.go",
         "refwatch_test.go",
         "rewrite_collect_test.go",
         "server_test.go",
