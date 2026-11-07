@@ -1,5 +1,8 @@
 # protovcs design
 
+**Authors:** Next Generation Interfaces Inc., with Claude Opus 5.5
+**Date:** 2026-11-06
+
 protovcs is a version-controlled store for one protobuf message. Clients split
 the message into pieces, encrypt each piece, and upload only the pieces the
 server does not already hold. The server keeps sealed bytes, a commit graph and
