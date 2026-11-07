@@ -230,6 +230,17 @@ func (t *Transport) watchOnce(ctx context.Context, deliver func([]protovcs.RefSt
 	return delivered, fmt.Errorf("protovcs: the server ended the ref watch")
 }
 
+// updateRefError turns a server's refusal on UpdateRef into the error a caller
+// matches on. FailedPrecondition on UpdateRef means the target commit does not
+// descend from the branch head and force was not set.
+func updateRefError(err error) error {
+	var cerr *connect.Error
+	if errors.As(err, &cerr) && cerr.Code() == connect.CodeFailedPrecondition {
+		return fmt.Errorf("%w: %s", protovcs.ErrNotFastForward, cerr.Message())
+	}
+	return fromConnect(err)
+}
+
 // UpdateRef moves a branch, or reports that somebody else moved it first.
 func (t *Transport) UpdateRef(ctx context.Context, name []byte, commit protovcs.CommitID, expected string, force bool) (protovcs.RefState, error) {
 	resp, err := t.client.UpdateRef(ctx, connect.NewRequest(&pb.UpdateRefRequest{
@@ -241,7 +252,7 @@ func (t *Transport) UpdateRef(ctx context.Context, name []byte, commit protovcs.
 		Force:            force,
 	}))
 	if err != nil {
-		return protovcs.RefState{}, fromConnect(err)
+		return protovcs.RefState{}, updateRefError(err)
 	}
 
 	current := protovcs.RefState{}
@@ -478,7 +489,7 @@ func (t *Transport) Usage(ctx context.Context) (*pb.Usage, error) {
 	}
 	resp, err := t.admin.GetUsage(ctx, connect.NewRequest(&pb.GetUsageRequest{StoreId: t.storeID}))
 	if err != nil {
-		return nil, err
+		return nil, fromConnect(err)
 	}
 	return resp.Msg.GetUsage(), nil
 }

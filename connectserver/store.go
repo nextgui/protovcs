@@ -129,6 +129,9 @@ func (s *Store) ListRefs(ctx context.Context, req *pb.ListRefsRequest) (*pb.List
 // with CodeUnauthenticated wrapping [storetoken.ErrExpired], and a client with a
 // fresh token opens a new one.
 func (s *Store) WatchRefs(ctx context.Context, req *pb.WatchRefsRequest, expires time.Time, send func(*pb.WatchRefsResponse) error) error {
+	if !expires.IsZero() && !s.now().Before(expires) {
+		return connect.NewError(connect.CodeUnauthenticated, storetoken.ErrExpired)
+	}
 	ctx, cancel := s.untilExpiry(ctx, expires)
 	defer cancel()
 
@@ -260,13 +263,17 @@ func (s *Store) HasChunks(ctx context.Context, req *pb.HasChunksRequest) (*pb.Ha
 func (s *Store) PutChunks(ctx context.Context, req *pb.PutChunksRequest) (*pb.PutChunksResponse, error) {
 	chunks := make([]protovcs.SealedChunk, 0, len(req.GetChunks()))
 	ids := make([]protovcs.ChunkID, 0, len(req.GetChunks()))
+	seen := make(map[protovcs.ChunkID]bool, len(req.GetChunks()))
 	for _, c := range req.GetChunks() {
 		id, err := protovcs.ChunkIDFromBytes(c.GetChunkId())
 		if err != nil {
 			return nil, connect.NewError(connect.CodeInvalidArgument, err)
 		}
 		chunks = append(chunks, protovcs.SealedChunk{ID: id, Sealed: c.GetSealed()})
-		ids = append(ids, id)
+		if !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
 	}
 
 	before, err := s.server.HasChunks(ctx, req.GetStoreId(), ids)

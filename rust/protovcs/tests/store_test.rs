@@ -746,3 +746,34 @@ async fn a_deletion_is_reported_once_while_other_branches_move() {
     let (err, ()) = futures::join!(watch, drive);
     assert_eq!(err.unwrap_err().to_string(), "stop");
 }
+
+#[tokio::test]
+async fn non_fast_forward_update_ref_returns_not_fast_forward() {
+    let server = MemServer::new();
+    let s = store(&server);
+    let main = s.branch("main");
+    let other = s.branch("other");
+
+    main.write(&meta("first"), &store_message(1)).await.unwrap();
+    let unrelated = other
+        .write(&meta("unrelated"), &store_message(2))
+        .await
+        .unwrap();
+
+    let (_, state) = main.head().await.unwrap();
+    let err = server
+        .transport()
+        .update_ref(
+            &state.name,
+            unrelated,
+            &state.cas_token,
+            protovcs::RefMove::FastForward,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        err.is(ErrorKind::NotFastForward),
+        "expected NotFastForward, got {err:?}"
+    );
+}
+

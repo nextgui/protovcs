@@ -287,7 +287,7 @@ impl StoreService for MemServer {
             }));
         }
         if !st.commits.contains_key(&commit) {
-            return Err(ConnectError::failed_precondition(format!(
+            return Err(ConnectError::internal(format!(
                 "protovcs: ref points at commit {commit}, which is not stored"
             )));
         }
