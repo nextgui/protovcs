@@ -12,6 +12,18 @@ rust_library(
     deps = all_crate_deps(normal = True) + ["//proto:protovcs_proto"],
 )
 
+# The same crate with the test-util feature, for the golden vectors, which fix
+# keys and nonces. Test only: a fixed nonce breaks AES-GCM.
+rust_library(
+    name = "protovcs_test_util",
+    testonly = True,
+    srcs = glob(["src/**/*.rs"]),
+    crate_features = ["test-util"],
+    crate_name = "protovcs",
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//proto:protovcs_proto"],
+)
+
 rust_test(
     name = "protovcs_unit_test",
     size = "small",
@@ -26,13 +38,10 @@ _TEST_DATA = [
 
 _TEST_ENV = {"PROTOVCS_GOLDEN_VECTORS": "$(rootpath @protovcs//:testdata/golden/vectors.json)"}
 
-_TEST_DEPS = all_crate_deps(
+_CRATE_DEPS = all_crate_deps(
     normal = True,
     normal_dev = True,
-) + [
-    ":protovcs",
-    "//memtransport:protovcs_memtransport",
-]
+)
 
 # Reproduces, byte for byte, the vectors the Go client writes.
 rust_test(
@@ -46,7 +55,10 @@ rust_test(
     data = _TEST_DATA,
     edition = "2024",
     env = _TEST_ENV,
-    deps = _TEST_DEPS,
+    deps = _CRATE_DEPS + [
+        ":protovcs_test_util",
+        "//memtransport:protovcs_memtransport_test_util",
+    ],
 )
 
 # The store's behaviour over the in-memory server.
@@ -61,5 +73,8 @@ rust_test(
     data = _TEST_DATA,
     edition = "2024",
     env = _TEST_ENV,
-    deps = _TEST_DEPS,
+    deps = _CRATE_DEPS + [
+        ":protovcs",
+        "//memtransport:protovcs_memtransport",
+    ],
 )

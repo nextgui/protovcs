@@ -11,3 +11,14 @@ rust_library(
     edition = "2024",
     deps = all_crate_deps(normal = True) + ["//protovcs"],
 )
+
+# Over protovcs with test-util, for the golden test, which needs one copy of
+# the crate throughout.
+rust_library(
+    name = "protovcs_memtransport_test_util",
+    testonly = True,
+    srcs = ["src/lib.rs"],
+    crate_name = "protovcs_memtransport",
+    edition = "2024",
+    deps = all_crate_deps(normal = True) + ["//protovcs:protovcs_test_util"],
+)
