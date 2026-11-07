@@ -8,10 +8,8 @@
 //
 // A chunk's stored bytes are not a protobuf. They are a version byte, a
 // twelve-byte nonce, then AES-256-GCM ciphertext and tag, with the chunk's own
-// name as additional authenticated data — the same envelope
-// //lib/vcsclient/cryptbackend uses, so there is one sealing format in this
-// repository rather than two. The messages below describe what is inside a
-// chunk once it is open.
+// name as additional authenticated data. The messages below describe what is
+// inside a chunk once it is open.
 //
 // # What the server is allowed to see
 //

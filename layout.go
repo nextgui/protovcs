@@ -423,9 +423,9 @@ func checkTransform(by *pb.ShardKey, fd protoreflect.FieldDescriptor) error {
 // isDateShaped reports whether a message has the year, month and day fields the
 // date transforms read.
 //
-// Matched by shape rather than by name so that //proto/types.Date,
-// google.type.Date and a product's own date all work without this package
-// knowing about any of them.
+// Matched by shape rather than by name so that google.type.Date and an
+// application's own date message both work without this package knowing about
+// either.
 func isDateShaped(md protoreflect.MessageDescriptor) bool {
 	for _, name := range []string{"year", "month", "day"} {
 		fd := md.Fields().ByName(protoreflect.Name(name))

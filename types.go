@@ -81,8 +81,6 @@ const RootItemKey ItemKey = ""
 // perfectly and merely produce different names. A schema it does not know parses
 // and names correctly and means something else.
 //
-// The Go packages are versioned to match, at lib/protovcs/v1, so a second
-// implementation can be linked beside this one while stores move between them.
 const (
 	// FormatVersion is the version of the protovcs formats themselves: the
 	// chunk envelope, the manifest node, and the commit record.
