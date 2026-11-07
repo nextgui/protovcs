@@ -1,0 +1,86 @@
+// Who may touch a store.
+//
+// protovcs cannot read what it stores, and that says nothing about who may
+// delete it. Encryption does not stop a delete, a branch rollback, or a quota
+// being exhausted by somebody who learned a store id. Those are decided here.
+//
+// Nothing in this file concerns the contents of a store. The key that encrypts
+// those never reaches a server and appears nowhere in this package.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+// StoreToken is a bearer's claim on one store.
+//
+// Minted by whoever holds the signing key, usually the service that
+// authenticated the user, and verified by the protovcs server, which holds
+// only the public half and therefore cannot mint one. That asymmetry is the
+// point: a compromised storage server can already delete the bytes it holds,
+// and should not additionally be able to issue itself access to stores it has
+// not been given.
+//
+// Signed rather than looked up. A server that had to check a token against a
+// database would need a database, and would need it available on every read of
+// every chunk. Nothing is stored, and nothing can therefore be struck off: a
+// leaked token works until it expires, which is why expiry is short.
+message StoreToken {
+  // The store this token is for. Nothing here is scoped to more than one: a
+  // token that named several would be a token whose blast radius is a list
+  // somebody has to read carefully.
+  string store_id = 1;
+
+  // What the bearer may do.
+  Access access = 2;
+
+  // Seconds since the Unix epoch, after which the token is refused.
+  //
+  // Absolute rather than a duration, so that a clock skew between minter and
+  // verifier shows up as a token refused early or late rather than as one that
+  // never expires.
+  int64 expires_unix = 3;
+
+  // Seconds since the Unix epoch, before which the token is refused.
+  //
+  // Present so that a token minted for later use cannot be used now, and so
+  // that a verifier with a badly wrong clock refuses rather than accepts.
+  int64 not_before_unix = 4;
+
+  // Drawn at random by the minter, so that two tokens issued in the same second
+  // for the same store and access are still distinct.
+  //
+  // Not checked by the verifier — nothing here has state to check it against —
+  // but it makes a token identifiable in a log without the log holding the
+  // signature.
+  bytes nonce = 5;
+}
+
+// Access is what a bearer may do to a store.
+//
+// Ordered from least to most, and checked as "at least": a method needing
+// ACCESS_READ is served to a token carrying ACCESS_WRITE. Making that an
+// ordering rather than a set is what stops a caller being handed write and
+// losing read.
+enum Access {
+  // Refused. A token that does not say what it allows allows nothing.
+  ACCESS_UNSPECIFIED = 0;
+
+  // Read chunks, commits and refs. Cannot upload, cannot move a branch.
+  //
+  // The level a share link would carry, and the level a service that only
+  // renders a vault should be given.
+  ACCESS_READ = 1;
+
+  // Everything ACCESS_READ allows, plus uploading chunks, recording commits and
+  // moving branches.
+  ACCESS_WRITE = 2;
+
+  // Everything ACCESS_WRITE allows, plus what the admin service exposes:
+  // creating a store, changing its quota, deleting it, triggering maintenance.
+  //
+  // Held by the service that owns accounts rather than by anything a user's
+  // browser runs, because these are the operations that destroy a vault rather
+  // than change one.
+  ACCESS_ADMIN = 3;
+}

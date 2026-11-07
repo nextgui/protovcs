@@ -1,0 +1,39 @@
+
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "connectserver",
+    srcs = [
+        "admin.go",
+        "auth.go",
+        "cors.go",
+        "handler.go",
+        "store.go",
+    ],
+    importpath = "github.com/nextgui/protovcs/connectserver",
+    deps = [
+        "//server",
+        "//:protovcs",
+        "//storetoken",
+        "//proto/protovcs/v1",
+        "@com_connectrpc_connect//:connect",
+        "@com_connectrpc_cors//:cors",
+        "@com_github_rs_cors//:cors",
+    ],
+)
+
+go_test(
+    name = "connectserver_test",
+    srcs = ["handler_test.go"],
+    deps = [
+        ":connectserver",
+        "//server",
+        "//storetoken",
+        "//proto/protovcs/v1",
+        "@com_connectrpc_connect//:connect",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)

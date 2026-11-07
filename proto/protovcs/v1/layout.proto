@@ -1,0 +1,277 @@
+// How one protobuf message is spread over the items a store holds.
+//
+// A layout is data rather than code. It is hashed into every commit, and it is
+// stored inside the store itself so that a client can read a commit written
+// under a layout it was not built with. Both would be impossible if it were a
+// Go value: source code has no defined hash, and a client cannot be handed one.
+//
+// Nothing here is evaluated by a server. A server stores chunks and cannot read
+// them, so every rule in this file is applied by clients only.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+// Layout says which fields of a message are split into separate items, how
+// callers may read them back, and which version of the message this is.
+message Layout {
+  // Identifies the layout in errors and in generated package names. Not a
+  // storage key: two stores may share a name.
+  string name = 1;
+
+  // Fully-qualified name of the message this layout decomposes, such as
+  // "example.notes.v1.Notebook". Written out in full because a commit
+  // records it and a reader resolves it against descriptors it was handed
+  // rather than against anything compiled in.
+  string root_message = 2;
+
+  // What the message means, incremented by hand when a change alters the
+  // meaning of data already written.
+  //
+  // Most changes need no bump. Protobuf reads an old record under a new schema
+  // when fields are only added, and stableproto refuses the changes it
+  // cannot read. This number exists for the one class of change no tool can
+  // detect: a field keeping its number and type while its meaning changes, such
+  // as an amount going from cents to tenths of a cent. Nothing can catch that,
+  // so it is declared.
+  uint32 schema_version = 3;
+
+  // The oldest schema_version this build will open. A commit below it is
+  // refused rather than read, which is how a retired version stops being
+  // silently interpreted by code that no longer understands it.
+  uint32 min_readable_version = 4;
+
+  // Repeated fields divided into one item per distinct shard value.
+  repeated Split splits = 5;
+
+  // Singular submessages moved into an item of their own.
+  repeated Extract extracts = 6;
+
+  // Large bytes fields cut into fixed-size pieces.
+  repeated Blob blobs = 7;
+
+  // Named subsets a caller may check out. Each one generates a type carrying
+  // only the accessors that subset can answer, so reading outside it fails to
+  // compile rather than fetching more than the caller asked for.
+  repeated Scope scopes = 8;
+
+  // The queries callers may run. A query the splits cannot answer efficiently
+  // fails the build, because the alternative is a query that quietly downloads
+  // the whole store.
+  repeated Query queries = 9;
+
+  // Size at which the root item — every field no rule mentions — is refused.
+  // The root item is fetched by every reader, so a message that lets it grow
+  // without bound makes every read expensive.
+  uint32 root_max_bytes = 10;
+
+  // Fully-qualified name of a message a commit may carry alongside its text,
+  // such as "example.notes.v1.NotebookCommit". Empty means commits carry
+  // text only, which is what a store that never declares one keeps doing.
+  //
+  // The questions worth asking of a history are which import produced a change,
+  // from which device, and which account it touched. Text answers those only by
+  // being parsed, so an application that wants them answered declares a message
+  // and gets a field.
+  //
+  // Named here rather than left to each commit because the descriptors travel
+  // in the SchemaChunk, which a commit already names: a reader with no
+  // generated code resolves this against those descriptors and reads the
+  // details dynamically, the same way it reads the data.
+  string commit_message = 11;
+}
+
+// Split turns one repeated or map field into many items, one per distinct
+// shard value.
+message Split {
+  // Field path from the root message, such as "entries". Dotted for a field
+  // inside a singular submessage.
+  string field = 1;
+
+  // What decides which item an element belongs to. More than one component
+  // makes a composite key, and the order of components decides which ranges
+  // are contiguous, exactly as it does for a composite database index.
+  repeated ShardKey by = 2;
+
+  // Fields the elements within one item are sorted by, after the shard key.
+  //
+  // A split field is a multiset rather than a list: reading returns elements in
+  // this order rather than in the order they were written. If a field's
+  // original order carries meaning, either do not split it or name an order
+  // here that reproduces it.
+  repeated string order = 3;
+
+  // The size this split aims for.
+  //
+  // A target, not a limit. An item over it is reported with the shard key
+  // component that would divide it, and the write proceeds. Set this to say how
+  // big items should be without saying what is intolerable.
+  //
+  // Exceeded is not the same as wrong. Shard keys bound item size in the
+  // ordinary case and not in every case: a bulk correction pass can date
+  // twenty-five thousand records to the same day and put them all in one item.
+  // Whether that is a layout to fix or a Tuesday is a judgement, and this
+  // reports it rather than deciding.
+  //
+  // protovcs does not subdivide an oversized item automatically. It cannot,
+  // without giving up something the design rests on — see the note on
+  // max_item_bytes below.
+  uint32 split_byte_count = 5;
+
+  // The size at which an item is refused.
+  //
+  // A ceiling, not a target. Zero means no ceiling, which is a reasonable
+  // setting alongside a split_byte_count: aim for a size, tolerate anything.
+  //
+  // Refusing rather than subdividing is forced. An automatic subdivision needs
+  // a sub-key, and every sub-key is one of two kinds:
+  //
+  //   - Derived from where an element falls among its neighbours, so groups
+  //     adapt to size. This breaks the rule that an element's item is a pure
+  //     function of the element, which is what lets a writer append without
+  //     reading anything.
+  //   - Derived from the element alone, so purity holds. But then it is exactly
+  //     a shard key component, which this layout can already express, and its
+  //     granularity is fixed rather than adaptive.
+  //
+  // There is no third kind. So an item that is genuinely too large is a layout
+  // that needs another component, and the error says which field to add it to.
+  //
+  // One case no layout can fix: a single element larger than this. Nothing
+  // divides one element, so refusing would make the data unstorable. That is
+  // allowed through and reported separately; the server's max_chunk_bytes is
+  // what bounds it.
+  uint32 max_item_bytes = 4;
+}
+
+// ShardKey is one component of the value that decides an element's item.
+//
+// It is a field path and a transform, and deliberately not an expression. A
+// shard key has to be computed identically by every client for the life of the
+// store, which is a description of a schema field rather than of a computed
+// value. A key that is not a field is a field waiting to be added.
+message ShardKey {
+  // Field path within the element, such as "account_id" or "date".
+  string field = 1;
+
+  // What to do to the field's value before it becomes a key segment.
+  Transform transform = 2;
+
+  // Number of buckets, for TRANSFORM_HASH only. Hashing loses order, so a
+  // hashed component supports equality and not ranges.
+  uint32 buckets = 3;
+}
+
+// Transform is the closed set of things a shard key may do to a field.
+//
+// Closed rather than an expression language because a shard key has to be
+// computed identically by every client for the life of the store, and a type
+// checker in every language is a high price for something a schema field
+// already expresses.
+enum Transform {
+  // Treated as IDENTITY, so a layout that forgets to say still works.
+  TRANSFORM_UNSPECIFIED = 0;
+
+  // The field's own value.
+  TRANSFORM_IDENTITY = 1;
+
+  // Date or timestamp fields, truncated. Sorting the resulting keys sorts the
+  // periods, which is what makes a date range a contiguous run of items.
+  TRANSFORM_DAY = 2;
+  // Year and month, as 2026-08.
+  TRANSFORM_MONTH = 3;
+
+  // Year and quarter, as 2026-Q3.
+  TRANSFORM_QUARTER = 4;
+
+  // Year alone, as 2026.
+  TRANSFORM_YEAR = 5;
+
+  // Fixed fanout for a high-cardinality field.
+  TRANSFORM_HASH = 6;
+}
+
+// Extract moves one singular submessage into its own item, so that changing it
+// does not rewrite everything else in the root item.
+message Extract {
+  // Field path from the root message.
+  string field = 1;
+}
+
+// Blob splits a large bytes field into fixed-size pieces, one item each, so
+// that appending to it does not rewrite what came before.
+message Blob {
+  // Field path from the root message.
+  string field = 1;
+
+  // Size of one piece. Every piece but the last is exactly this, so the same
+  // bytes always cut the same way and a piece nobody touched keeps its name.
+  uint32 piece_bytes = 2;
+}
+
+// Scope is a named subset of a store that a caller may check out.
+message Scope {
+  // Generates a type and an interface of this name. A function requiring this
+  // subset says so in its signature, and a caller holding less does not
+  // compile.
+  string name = 1;
+
+  // What the scope covers. Every part is fetched by a checkout that names it.
+  repeated ScopeInclude include = 2;
+}
+
+// ScopeInclude is one field, or part of one, that a scope covers.
+message ScopeInclude {
+  // Field path from the root message.
+  string field = 1;
+
+  // Which parts of that field. Empty means all of it.
+  repeated Predicate by = 2;
+}
+
+// Query is a lookup the generated package exposes as a method.
+//
+// Declared rather than composed, following //lib/store/protostore. There the
+// reason is that Firestore needs an index per query shape. Here it is worse: a
+// query the splits cannot answer is not slow, it is a download of the whole
+// store, and a browser is where that happens.
+message Query {
+  // Name of the generated method, such as "EntriesForDateRange".
+  string name = 1;
+
+  // Field it reads.
+  string field = 2;
+
+  // Conditions, in the order the field's shard key components appear. A query
+  // that skips a component selects a scatter across every value of it, which is
+  // a scan wearing a query's clothes, and fails the build.
+  repeated Predicate by = 3;
+}
+
+// Predicate is one condition on a query or a scope.
+message Predicate {
+  // Field within the element. Must be a shard key component of the field's
+  // split, or the query cannot be served and the build fails.
+  string field = 1;
+
+  // How the field is compared.
+  Op op = 2;
+}
+
+// Op is how a predicate compares. There is no OR: each shape has to be a
+// contiguous run of item keys, and a disjunction is two runs.
+enum Op {
+  // Never valid in a declared query.
+  OP_UNSPECIFIED = 0;
+
+  // One value. Selects one segment of the item key.
+  OP_EQ = 1;
+
+  // A range of values, which is contiguous only because item keys sort the way
+  // their values do. Permitted on the last condition only.
+  OP_RANGE = 2;
+
+  // Every value, which is every item under the preceding segments.
+  OP_ALL = 3;
+}

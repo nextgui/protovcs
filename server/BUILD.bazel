@@ -1,0 +1,46 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "server",
+    srcs = [
+        "collect.go",
+        "memstorage.go",
+        "pack.go",
+        "refwatch.go",
+        "server.go",
+        "storage.go",
+        "sweep.go",
+        "transport.go",
+    ],
+    importpath = "github.com/nextgui/protovcs/server",
+    deps = [
+        "//:protovcs",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "server_test",
+    size = "small",
+    srcs = [
+        "endtoend_test.go",
+        "guards_test.go",
+        "limits_test.go",
+        "refwatch_test.go",
+        "rewrite_collect_test.go",
+        "server_test.go",
+        "sweep_test.go",
+    ],
+    deps = [
+        ":server",
+        "//:protovcs",
+        "//proto/protovcs/testpb",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

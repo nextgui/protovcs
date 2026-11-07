@@ -1,0 +1,14 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "memtransport",
+    srcs = ["memtransport.go"],
+    importpath = "github.com/nextgui/protovcs/memtransport",
+    deps = [
+        "//:protovcs",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//proto",
+    ],
+)

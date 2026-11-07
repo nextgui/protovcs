@@ -1,0 +1,75 @@
+// Annotations a stored message carries for protovcs.
+//
+// These are on the proto rather than in a layout, so two layouts over one
+// message cannot disagree about them, and so stableproto guards them
+// like any other part of a stored schema.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+extend google.protobuf.FieldOptions {
+  // Which field of this repeated field's elements tells one from another.
+  //
+  // A field path within the element, dotted for a field inside a singular
+  // submessage: "id", or "provenance.record_id".
+  //
+  // # Why this is on the field and not on the element's message
+  //
+  // Identity is a property of the collection, not of the type. The same message
+  // is identified in one place and a plain bag of values in another: a repeated
+  // Point that is a polygon's vertices has no identity, because two identical
+  // vertices are meaningful, while a repeated Point that is a list of cities
+  // does. Putting it on the message would force one answer on every use.
+  //
+  // It also means a message this repository does not own can still be held in
+  // an identified collection. A field option is something the user of a type
+  // writes; a message option is something its author would have to.
+  //
+  // # What declaring it buys
+  //
+  // A split whose shard key includes the identity divides one element per item,
+  // which is what a split reaching through this field would need, and knowing it
+  // here means a layout that cannot work fails to compile rather than failing on
+  // a first write.
+  //
+  // Elements within an item are ordered by it when a split declares no order of
+  // its own, which gives a total order rather than one that falls back to
+  // comparing encoded bytes.
+  //
+  // Two elements sharing an identity within one item are refused. A double
+  // append, or a deduplication that did not, produces exactly that, and it is
+  // cheap to catch where it happens.
+  //
+  // # There is no default, and nothing infers one
+  //
+  // An operation needing an identity requires this to be set and refuses
+  // without it, rather than guessing. Two guesses are available and both are
+  // wrong.
+  //
+  // Index is the obvious one. It is wrong because a split field is a multiset
+  // rather than a list: reading returns the layout's canonical order, not the
+  // order elements were written in, so an element's index is decided by the
+  // order keys and shifts when a neighbour is added. An identity that moves
+  // when something else is inserted identifies nothing.
+  //
+  // Contents are the other. That is what distinguishes elements when nothing is
+  // declared — two with identical canonical bytes are indistinguishable, which
+  // is what a multiset means — but it is not an identity, because it cannot
+  // survive an edit. The whole point of an identity is that an element stays
+  // the same one when its contents change, so inferring it from contents is
+  // inferring the opposite of what is wanted.
+  //
+  // So a layout that needs an identity and has none fails, and says which field
+  // to annotate.
+  //
+  // # What it does not do
+  //
+  // Nothing merges two elements because their identities match. A wrong
+  // identity here therefore gives wrong answers to ordering and to the
+  // uniqueness check, and cannot fold two records into one.
+  string identity = 50401;
+}

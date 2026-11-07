@@ -1,0 +1,15 @@
+load("@rules_go//proto:compiler.bzl", "go_proto_compiler")
+
+package(default_visibility = ["//visibility:public"])
+
+exports_files(["defs.bzl"])
+
+# Generates Connect clients and handlers beside the protobuf Go code, in the
+# same package.
+go_proto_compiler(
+    name = "connect_go_proto_compiler",
+    options = ["package_suffix="],
+    plugin = "@com_connectrpc_connect//cmd/protoc-gen-connect-go:protoc-gen-connect-go",
+    suffix = ".connect.go",
+    deps = ["@com_connectrpc_connect//:connect"],
+)

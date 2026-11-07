@@ -1,0 +1,912 @@
+// Command protovcsgen turns a layout into typed Go accessors.
+//
+// A layout is checked when it is built rather than when a store is first
+// opened: loading it is the validation, because compiling a layout against its
+// message descriptor is what catches a field path that does not exist, a
+// transform that cannot apply to the field it names, and a query no split can
+// serve. All three would otherwise be found on a first write, in production.
+//
+// What it emits is a facade over the dynamic API, not a second implementation
+// of it. Every generated method calls into lib/protovcs, so there is one
+// materialiser and the generated code cannot drift from it.
+package main
+
+import (
+	"flag"
+	"fmt"
+	"os"
+	"sort"
+	"strings"
+
+	"google.golang.org/protobuf/encoding/prototext"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/reflect/protoregistry"
+	"google.golang.org/protobuf/types/descriptorpb"
+
+	protovcs "github.com/nextgui/protovcs"
+	pb "github.com/nextgui/protovcs/proto/protovcs/v1"
+)
+
+type descriptorSets []string
+
+func (d *descriptorSets) String() string     { return strings.Join(*d, ",") }
+func (d *descriptorSets) Set(v string) error { *d = append(*d, v); return nil }
+
+func main() {
+	var (
+		layoutPath = flag.String("layout", "", "the layout textproto to read")
+		goPackage  = flag.String("go_package", "", "package clause of the generated file")
+		goOut      = flag.String("go_out", "", "where to write the generated Go")
+		sets       descriptorSets
+		locks      descriptorSets
+		marked     descriptorSets
+	)
+	flag.Var(&sets, "descriptor_set", "a descriptor set holding the message the layout decomposes; repeatable")
+	flag.Var(&locks, "lock", "a schema lock covering the message the layout decomposes; repeatable")
+	flag.Var(&marked, "refuse_marked", "full name of a bool message option marking messages that must never be stored; repeatable")
+	flag.Parse()
+
+	if err := run(*layoutPath, *goPackage, *goOut, sets, locks, marked); err != nil {
+		fmt.Fprintf(os.Stderr, "protovcsgen: %v\n", err)
+		os.Exit(1)
+	}
+}
+
+func run(layoutPath, goPackage, goOut string, sets, locks, marked descriptorSets) error {
+	raw, err := os.ReadFile(layoutPath)
+	if err != nil {
+		return err
+	}
+
+	layout := &pb.Layout{}
+	// Unknown fields are refused rather than ignored. A layout with a
+	// misspelled field would otherwise compile as one that does not have it,
+	// and the store would be sharded differently from what its author wrote.
+	if err := (prototext.UnmarshalOptions{}).Unmarshal(raw, layout); err != nil {
+		return fmt.Errorf("reading %s: %w", layoutPath, err)
+	}
+
+	files, err := loadDescriptors(sets)
+	if err != nil {
+		return err
+	}
+	desc, err := files.FindDescriptorByName(protoreflect.FullName(layout.GetRootMessage()))
+	if err != nil {
+		return fmt.Errorf("layout %q names %s, which is not in any descriptor set given to this rule; "+
+			"add its proto_library to the protos attribute", layout.GetName(), layout.GetRootMessage())
+	}
+	md, ok := desc.(protoreflect.MessageDescriptor)
+	if !ok {
+		return fmt.Errorf("%s is not a message", layout.GetRootMessage())
+	}
+
+	// A message nobody locked can be renumbered, and a renumbered field changes
+	// what every stored byte means and renames every chunk holding it. Checked
+	// before anything is generated, so a layout over an unlocked message never
+	// produces code somebody could write a store with.
+	if err := checkLocked(md, locks); err != nil {
+		return err
+	}
+
+	// A raw key is passed for one call and kept nowhere, so a layout whose
+	// root can reach a message marked as one is refused before any code is
+	// generated for it. Which option marks one is the caller's to say.
+	if err := checkUnmarked(md, files, marked); err != nil {
+		return fmt.Errorf("layout %q: %w", layout.GetName(), err)
+	}
+
+	// Loading is the validation.
+	compiled, err := protovcs.CompileLayout(layout, md)
+	if err != nil {
+		return err
+	}
+
+	out, err := generate(compiled, layout, md, goPackage)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(goOut, []byte(out), 0o644)
+}
+
+func loadDescriptors(sets descriptorSets) (*protoregistry.Files, error) {
+	combined := &descriptorpb.FileDescriptorSet{}
+	seen := map[string]bool{}
+
+	for _, path := range sets {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return nil, err
+		}
+		set := &descriptorpb.FileDescriptorSet{}
+		if err := proto.Unmarshal(raw, set); err != nil {
+			return nil, fmt.Errorf("reading descriptor set %s: %w", path, err)
+		}
+		for _, f := range set.GetFile() {
+			if seen[f.GetName()] {
+				continue
+			}
+			seen[f.GetName()] = true
+			combined.File = append(combined.File, f)
+		}
+	}
+	return protodesc.NewFiles(combined)
+}
+
+func generate(c *protovcs.Compiled, layout *pb.Layout, md protoreflect.MessageDescriptor, goPackage string) (string, error) {
+	var b strings.Builder
+
+	fmt.Fprintf(&b, "// Code generated by //cmd/protovcsgen; DO NOT EDIT.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// Layout %q over %s, schema version %d.\n", layout.GetName(), md.FullName(), layout.GetSchemaVersion())
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// A facade over lib/protovcs, not a second implementation of it. Every\n")
+	fmt.Fprintf(&b, "// function here calls the same materialiser and the same segment formatting\n")
+	fmt.Fprintf(&b, "// the dynamic API uses, so the two cannot disagree about which item an\n")
+	fmt.Fprintf(&b, "// element belongs to.\n\n")
+	fmt.Fprintf(&b, "package %s\n\n", goPackage)
+
+	rootAlias, rootImport := goTypeOf(md)
+
+	fmt.Fprintf(&b, "import (\n")
+	fmt.Fprintf(&b, "\t\"context\"\n")
+	fmt.Fprintf(&b, "\t\"fmt\"\n")
+	fmt.Fprintf(&b, "\t\"time\"\n\n")
+	fmt.Fprintf(&b, "\t\"google.golang.org/protobuf/proto\"\n")
+	fmt.Fprintf(&b, "\t\"google.golang.org/protobuf/encoding/prototext\"\n")
+	fmt.Fprintf(&b, "\t\"google.golang.org/protobuf/reflect/protoreflect\"\n\n")
+	fmt.Fprintf(&b, "\tprotovcs \"github.com/nextgui/protovcs\"\n")
+	fmt.Fprintf(&b, "\tprotovcspb \"github.com/nextgui/protovcs/proto/protovcs/v1\"\n")
+
+	imports := map[string]string{}
+	if rootImport != "" {
+		imports[rootImport] = rootAlias
+	}
+	for _, split := range layout.GetSplits() {
+		if elem := elementOf(md, split.GetField()); elem != nil {
+			alias, path := goTypeOf(elem)
+			if path != "" {
+				imports[path] = alias
+			}
+		}
+	}
+	if cm := c.CommitMessage(); cm != nil {
+		if alias, path := goTypeOf(cm); path != "" {
+			imports[path] = alias
+		}
+	}
+	paths := make([]string, 0, len(imports))
+	for p := range imports {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	for _, p := range paths {
+		fmt.Fprintf(&b, "\t%s \"%s\"\n", imports[p], p)
+	}
+	fmt.Fprintf(&b, ")\n\n")
+
+	encoded, err := prototextMarshal(layout)
+	if err != nil {
+		return "", err
+	}
+	fmt.Fprintf(&b, "// layoutText is the layout this package was generated from.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// Carried as text rather than rebuilt in Go so that the layout hashed into\n")
+	fmt.Fprintf(&b, "// every commit is the one an author edited, byte for byte.\n")
+	fmt.Fprintf(&b, "const layoutText = %s\n\n", backquote(encoded))
+
+	fmt.Fprintf(&b, "// RootMessage is the message this layout decomposes.\n")
+	fmt.Fprintf(&b, "const RootMessage = %q\n\n", md.FullName())
+	fmt.Fprintf(&b, "// SchemaVersion is what the data means, as declared by the layout.\n")
+	fmt.Fprintf(&b, "const SchemaVersion = %d\n\n", layout.GetSchemaVersion())
+
+	fmt.Fprintf(&b, "// Layout compiles the layout above against a message descriptor.\n")
+	fmt.Fprintf(&b, "func Layout(desc protoreflect.MessageDescriptor) (*protovcs.Compiled, error) {\n")
+	fmt.Fprintf(&b, "\tl := &protovcspb.Layout{}\n")
+	fmt.Fprintf(&b, "\tif err := prototext.Unmarshal([]byte(layoutText), l); err != nil {\n")
+	fmt.Fprintf(&b, "\t\treturn nil, err\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\treturn protovcs.CompileLayout(l, desc)\n")
+	fmt.Fprintf(&b, "}\n\n")
+
+	fmt.Fprintf(&b, "// Store is a protovcs store holding a %s.\n", md.Name())
+	fmt.Fprintf(&b, "type Store struct{ inner *protovcs.Store }\n\n")
+
+	fmt.Fprintf(&b, "// Open returns a store over this layout.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// The root type is checked here, once, rather than on every read. What could\n")
+	fmt.Fprintf(&b, "// go wrong is a store opened with another layout's compiled form, which is a\n")
+	fmt.Fprintf(&b, "// construction mistake — so it is reported at construction.\n")
+	fmt.Fprintf(&b, "func Open(b *protovcs.StoreBuilder) (*Store, error) {\n")
+	fmt.Fprintf(&b, "\tc, err := Layout((&%s.%s{}).ProtoReflect().Descriptor())\n", rootAlias, md.Name())
+	fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(&b, "\tif _, ok := c.New().Interface().(*%s.%s); !ok {\n", rootAlias, md.Name())
+	fmt.Fprintf(&b, "\t\treturn nil, fmt.Errorf(\"%%s: this build's descriptors are not the ones the layout resolved\", RootMessage)\n")
+	fmt.Fprintf(&b, "\t}\n")
+	fmt.Fprintf(&b, "\tinner, err := b.WithLayout(c).Build()\n")
+	fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(&b, "\treturn &Store{inner: inner}, nil\n}\n\n")
+
+	fmt.Fprintf(&b, "// Unwrap returns the store underneath, for what this facade does not cover.\n")
+	fmt.Fprintf(&b, "func (s *Store) Unwrap() *protovcs.Store { return s.inner }\n\n")
+
+	fmt.Fprintf(&b, "// Branch returns a handle on one line of history.\n")
+	fmt.Fprintf(&b, "func (s *Store) Branch(name string) *Branch {\n")
+	fmt.Fprintf(&b, "\treturn &Branch{inner: s.inner.Branch(name)}\n}\n\n")
+
+	fmt.Fprintf(&b, "// Branch is one line of history, typed to this layout's message.\n")
+	fmt.Fprintf(&b, "type Branch struct{ inner *protovcs.Branch }\n\n")
+
+	fmt.Fprintf(&b, "// Unwrap returns the branch underneath, for what this facade does not cover.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Unwrap() *protovcs.Branch { return b.inner }\n\n")
+
+	fmt.Fprintf(&b, "// Name returns the branch's readable name.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Name() string { return b.inner.Name() }\n\n")
+
+	fmt.Fprintf(&b, "// Head returns the commit this branch points at.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// A commit is not typed by the layout — it names one, and carries the schema\n")
+	fmt.Fprintf(&b, "// it was written under — so this is the untyped record.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Head(ctx context.Context) (*protovcspb.Commit, protovcs.RefState, error) {\n")
+	fmt.Fprintf(&b, "\treturn b.inner.Head(ctx)\n}\n\n")
+
+	fmt.Fprintf(&b, "// Watch calls moved every time this branch points somewhere new, and blocks\n")
+	fmt.Fprintf(&b, "// until the context is done or moved returns an error.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// The first call carries where the branch is now. A RefState is not typed by\n")
+	fmt.Fprintf(&b, "// the layout — it says where a branch points and nothing about the contents —\n")
+	fmt.Fprintf(&b, "// so this is a plain delegation, and the typed read is Read.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Watch(ctx context.Context, moved func(protovcs.RefState) error) error {\n")
+	fmt.Fprintf(&b, "\treturn b.inner.Watch(ctx, moved)\n}\n\n")
+
+	rootType := rootAlias + "." + string(md.Name())
+
+	fmt.Fprintf(&b, "// Read returns the whole message at a branch's head.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// Typed, so nothing asserts on the way out. The dynamic API returns a\n")
+	fmt.Fprintf(&b, "// proto.Message because it does not know what it is holding; this does.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Read(ctx context.Context) (*%s, error) {\n", rootType)
+	fmt.Fprintf(&b, "\tm, err := b.inner.Read(ctx)\n")
+	fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(&b, "\tout, ok := m.(*%s)\n", rootType)
+	fmt.Fprintf(&b, "\tif !ok {\n")
+	fmt.Fprintf(&b, "\t\t// Open already refused a store that could produce this, so this\n")
+	fmt.Fprintf(&b, "\t\t// branch is unreachable rather than merely unlikely.\n")
+	fmt.Fprintf(&b, "\t\treturn nil, fmt.Errorf(\"%%s: store holds %%T, not %s\", RootMessage, m)\n", rootType)
+	fmt.Fprintf(&b, "\t}\n\treturn out, nil\n}\n\n")
+
+	emitMeta(&b, c, layout)
+
+	fmt.Fprintf(&b, "// Write publishes a message as the branch's next version.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Write(ctx context.Context, meta Meta, m *%s) (protovcs.CommitID, error) {\n", rootType)
+	fmt.Fprintf(&b, "\tinner, err := meta.inner()\n")
+	fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn protovcs.CommitID{}, err\n\t}\n")
+	fmt.Fprintf(&b, "\treturn b.inner.Write(ctx, inner, m)\n}\n\n")
+
+	fmt.Fprintf(&b, "// Change reads the branch, runs mutate, and publishes the result.\n")
+	fmt.Fprintf(&b, "//\n")
+	fmt.Fprintf(&b, "// mutate runs again if another writer commits first, so it must be safe to\n")
+	fmt.Fprintf(&b, "// run more than once against a different starting state.\n")
+	fmt.Fprintf(&b, "func (b *Branch) Change(ctx context.Context, meta Meta,\n")
+	fmt.Fprintf(&b, "\tmutate func(context.Context, *%s) error) (protovcs.CommitID, error) {\n\n", rootType)
+	fmt.Fprintf(&b, "\tinner, err := meta.inner()\n")
+	fmt.Fprintf(&b, "\tif err != nil {\n\t\treturn protovcs.CommitID{}, err\n\t}\n")
+	fmt.Fprintf(&b, "\treturn b.inner.Change(ctx, inner, func(ctx context.Context, m proto.Message) error {\n")
+	fmt.Fprintf(&b, "\t\ttyped, ok := m.(*%s)\n", rootType)
+	fmt.Fprintf(&b, "\t\tif !ok {\n")
+	fmt.Fprintf(&b, "\t\t\treturn fmt.Errorf(\"%%s: store holds %%T, not %s\", RootMessage, m)\n", rootType)
+	fmt.Fprintf(&b, "\t\t}\n")
+	fmt.Fprintf(&b, "\t\treturn mutate(ctx, typed)\n")
+	fmt.Fprintf(&b, "\t})\n}\n\n")
+
+	emitLog(&b, c)
+
+	for _, split := range layout.GetSplits() {
+		if err := emitSplit(&b, md, layout, split, rootAlias); err != nil {
+			return "", err
+		}
+	}
+
+	for _, sc := range sortedScopes(layout.GetScopes()) {
+		if err := emitDeclaredScope(&b, md, layout, sc, rootAlias); err != nil {
+			return "", err
+		}
+	}
+
+	return b.String(), nil
+}
+
+// emitDeclaredScope writes the typed surface for a scope that spans more than
+// one collection.
+//
+// A view per split is strongly typed and cannot span, and a checkout per split
+// is a round trip per split. Naming the combination in the layout gets both: the
+// combination is checked when the layout compiles, fetched in one request, and
+// the view that comes back has an accessor per collection it covers.
+func emitDeclaredScope(b *strings.Builder, md protoreflect.MessageDescriptor,
+	layout *pb.Layout, sc *pb.Scope, rootAlias string) error {
+
+	name := exported(sc.GetName())
+	rootType := rootAlias + "." + string(md.Name())
+
+	fmt.Fprintf(b, "// %sScope is the declared scope %q.\n", name, sc.GetName())
+	fmt.Fprintf(b, "type %sScope struct{ scope protovcs.Scope }\n\n", name)
+
+	fmt.Fprintf(b, "// Scope returns the underlying range.\n")
+	fmt.Fprintf(b, "func (s %sScope) Scope() protovcs.Scope { return s.scope }\n\n", name)
+
+	fmt.Fprintf(b, "// Scope%s covers everything %q names.\n", name, sc.GetName())
+	fmt.Fprintf(b, "func Scope%s() %sScope {\n", name, name)
+	fmt.Fprintf(b, "\treturn %sScope{scope: protovcs.Union(\n", name)
+	for _, inc := range sc.GetInclude() {
+		// A split field is under a key of its own; a field no rule mentions is
+		// in the root item. Emitting Field() for the second kind would produce a
+		// scope covering nothing, and a scope covering nothing reads as an empty
+		// field rather than as an error.
+		split, err := isSplit(layout, inc.GetField())
+		if err != nil {
+			return err
+		}
+		if split {
+			fmt.Fprintf(b, "\t\tprotovcs.Field(%q),\n", inc.GetField())
+		} else {
+			fmt.Fprintf(b, "\t\tprotovcs.Root(), // %s is not split, so it is in the root item\n", inc.GetField())
+		}
+	}
+	fmt.Fprintf(b, "\t)}\n}\n\n")
+
+	fmt.Fprintf(b, "// %sView is what a %sScope checked out, with one accessor per\n", name, name)
+	fmt.Fprintf(b, "// collection it covers and none for the collections it does not.\n")
+	fmt.Fprintf(b, "type %sView struct {\n\tpart *protovcs.Partial\n}\n\n", name)
+
+	fmt.Fprintf(b, "// Checkout%s fetches everything the scope names, in one request.\n", name)
+	fmt.Fprintf(b, "func (b *Branch) Checkout%s(ctx context.Context, s %sScope) (*%sView, error) {\n",
+		name, name, name)
+	fmt.Fprintf(b, "\tpart, err := b.inner.Checkout(ctx, s.scope)\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(b, "\treturn &%sView{part: part}, nil\n}\n\n", name)
+
+	for _, inc := range sc.GetInclude() {
+		field := inc.GetField()
+		split := splitFor(layout, field)
+		if split == nil {
+			// A field no split covers lives in the root item, which the scope
+			// above fetches. It still needs an accessor, or a caller who named
+			// it in a scope has no typed way to read it and falls back to
+			// asserting on Materialized() — which is what the generated code
+			// exists to avoid.
+			if err := emitRootAccessor(b, md, field, name, rootType); err != nil {
+				return err
+			}
+			continue
+		}
+		elem := elementOf(md, field)
+		if elem == nil {
+			continue
+		}
+		elemAlias, _ := goTypeOf(elem)
+		elemType := elemAlias + "." + string(elem.Name())
+		acc := exported(field)
+
+		fmt.Fprintf(b, "// %s returns every element of %q this view holds.\n", acc, field)
+		fmt.Fprintf(b, "func (v *%sView) %s() []*%s {\n", name, acc, elemType)
+		fmt.Fprintf(b, "\tvar out []*%s\n", elemType)
+		fmt.Fprintf(b, "\tfor _, it := range v.part.Items() {\n")
+		fmt.Fprintf(b, "\t\tfrag, ok := it.Fragment.(*%s)\n", rootType)
+		fmt.Fprintf(b, "\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n")
+		fmt.Fprintf(b, "\t\tout = append(out, frag.Get%s()...)\n", acc)
+		fmt.Fprintf(b, "\t}\n\treturn out\n}\n\n")
+
+		fmt.Fprintf(b, "// Put%s stages one element of %q.\n", singular(acc), field)
+		fmt.Fprintf(b, "func (v *%sView) Put%s(ctx context.Context, elem *%s) error {\n",
+			name, singular(acc), elemType)
+		fmt.Fprintf(b, "\treturn v.part.PutElement(ctx, %q, elem)\n}\n\n", field)
+	}
+
+	fmt.Fprintf(b, "// Commit publishes what was staged as a new version.\n")
+	fmt.Fprintf(b, "func (v *%sView) Commit(ctx context.Context, meta Meta) (protovcs.CommitID, error) {\n", name)
+	fmt.Fprintf(b, "\tinner, err := meta.inner()\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn protovcs.CommitID{}, err\n\t}\n")
+	fmt.Fprintf(b, "\treturn v.part.Commit(ctx, inner)\n}\n\n")
+
+	fmt.Fprintf(b, "// Partial returns the handle underneath.\n")
+	fmt.Fprintf(b, "func (v *%sView) Partial() *protovcs.Partial { return v.part }\n\n", name)
+	return nil
+}
+
+func splitFor(layout *pb.Layout, field string) *pb.Split {
+	for _, s := range layout.GetSplits() {
+		if s.GetField() == field {
+			return s
+		}
+	}
+	return nil
+}
+
+// singular drops a trailing s, so a setter for "records" is PutRecord.
+func singular(name string) string {
+	if strings.HasSuffix(name, "ies") {
+		return name[:len(name)-3] + "y"
+	}
+	if strings.HasSuffix(name, "s") {
+		return name[:len(name)-1]
+	}
+	return name
+}
+
+// emitSplit writes the typed surface for one split: a scope type nothing else
+// can be passed as, constructors that take the shard key's own types rather
+// than a preformatted string, and a view that hands back elements instead of a
+// fragment to cast.
+func emitSplit(b *strings.Builder, md protoreflect.MessageDescriptor, layout *pb.Layout, split *pb.Split, rootAlias string) error {
+	name := exported(split.GetField())
+	field := split.GetField()
+
+	elem := elementOf(md, field)
+	if elem == nil {
+		return fmt.Errorf("split %q has no element message", field)
+	}
+	elemAlias, _ := goTypeOf(elem)
+	elemType := elemAlias + "." + string(elem.Name())
+
+	fmt.Fprintf(b, "// %sScope is a scope over %q and nothing else.\n", name, field)
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// Its own type rather than a bare protovcs.Scope, so a scope over one\n")
+	fmt.Fprintf(b, "// collection cannot be passed where another is wanted. The two are ranges of\n")
+	fmt.Fprintf(b, "// strings underneath and nothing but the type tells them apart.\n")
+	fmt.Fprintf(b, "type %sScope struct{ scope protovcs.Scope }\n\n", name)
+
+	fmt.Fprintf(b, "// Scope returns the underlying range, for a caller mixing this with others.\n")
+	fmt.Fprintf(b, "func (s %sScope) Scope() protovcs.Scope { return s.scope }\n\n", name)
+
+	fmt.Fprintf(b, "// All%s covers every item of %q.\n", name, field)
+	fmt.Fprintf(b, "func All%s() %sScope {\n", name, name)
+	fmt.Fprintf(b, "\treturn %sScope{scope: protovcs.Field(%q)}\n}\n\n", name, field)
+
+	// One constructor per leading run of shard key components, so a caller can
+	// name as much of the key as it knows.
+	for n := 1; n <= len(split.GetBy()); n++ {
+		if err := emitScopeConstructor(b, elem, split, name, field, n); err != nil {
+			return err
+		}
+	}
+
+	fmt.Fprintf(b, "// %sView is the part of a store a %sScope checked out.\n", name, name)
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// Holds elements rather than fragments, so nothing has to assert a type on\n")
+	fmt.Fprintf(b, "// the way out. An unchecked assertion on every read is what this replaces.\n")
+	fmt.Fprintf(b, "type %sView struct {\n", name)
+	fmt.Fprintf(b, "\tpart *protovcs.Partial\n}\n\n")
+
+	fmt.Fprintf(b, "// Append%s returns a view holding nothing, for a caller that only adds.\n", name)
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// Adding an element does not require reading the collection it goes into.\n")
+	fmt.Fprintf(b, "// Which item it belongs to is computed from the element alone, so Put fetches\n")
+	fmt.Fprintf(b, "// that one item and nothing else — the same cost whether the store holds a\n")
+	fmt.Fprintf(b, "// hundred items or a million, and the same cost for one element or for a\n")
+	fmt.Fprintf(b, "// thousand that land in the same item.\n")
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// It fetches the target item rather than nothing at all because appending to\n")
+	fmt.Fprintf(b, "// an item that already exists, without reading it, would drop what it holds:\n")
+	fmt.Fprintf(b, "// a commit re-encodes an item whole. That one read is the floor.\n")
+	fmt.Fprintf(b, "func (b *Branch) Append%s(ctx context.Context) (*%sView, error) {\n", name, name)
+	fmt.Fprintf(b, "\tpart, err := b.inner.Checkout(ctx, protovcs.Nothing())\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(b, "\treturn &%sView{part: part}, nil\n}\n\n", name)
+
+	fmt.Fprintf(b, "// Checkout%s fetches exactly what the scope names.\n", name)
+	fmt.Fprintf(b, "func (b *Branch) Checkout%s(ctx context.Context, s %sScope) (*%sView, error) {\n",
+		name, name, name)
+	fmt.Fprintf(b, "\tpart, err := b.inner.Checkout(ctx, s.scope)\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n")
+	fmt.Fprintf(b, "\treturn &%sView{part: part}, nil\n}\n\n", name)
+
+	fmt.Fprintf(b, "// All returns every element this view holds, in item key order.\n")
+	fmt.Fprintf(b, "func (v *%sView) All() []*%s {\n", name, elemType)
+	fmt.Fprintf(b, "\tvar out []*%s\n", elemType)
+	fmt.Fprintf(b, "\tfor _, it := range v.part.Items() {\n")
+	fmt.Fprintf(b, "\t\tfrag, ok := it.Fragment.(*%s)\n", rootAlias+"."+string(md.Name()))
+	fmt.Fprintf(b, "\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n")
+	fmt.Fprintf(b, "\t\tout = append(out, frag.Get%s()...)\n", exported(field))
+	fmt.Fprintf(b, "\t}\n\treturn out\n}\n\n")
+
+	fmt.Fprintf(b, "// Put stages one element, in whichever item its shard key names.\n")
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// The item is computed from the element alone, so this needs no read. An\n")
+	fmt.Fprintf(b, "// element whose item was not checked out is still accepted: a write's cost is\n")
+	fmt.Fprintf(b, "// bounded by the element, unlike a read's.\n")
+	fmt.Fprintf(b, "func (v *%sView) Put(ctx context.Context, elem *%s) error {\n", name, elemType)
+	fmt.Fprintf(b, "\treturn v.part.PutElement(ctx, %q, elem)\n}\n\n", field)
+
+	fmt.Fprintf(b, "// Commit publishes what was staged as a new version.\n")
+	fmt.Fprintf(b, "func (v *%sView) Commit(ctx context.Context, meta Meta) (protovcs.CommitID, error) {\n", name)
+	fmt.Fprintf(b, "\tinner, err := meta.inner()\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn protovcs.CommitID{}, err\n\t}\n")
+	fmt.Fprintf(b, "\treturn v.part.Commit(ctx, inner)\n}\n\n")
+
+	fmt.Fprintf(b, "// Partial returns the handle underneath, for what this facade does not cover.\n")
+	fmt.Fprintf(b, "func (v *%sView) Partial() *protovcs.Partial { return v.part }\n\n", name)
+
+	fmt.Fprintf(b, "// %sItemKey returns the item one element belongs to.\n", name)
+	fmt.Fprintf(b, "func %sItemKey(c *protovcs.Compiled, elem *%s) (protovcs.ItemKey, error) {\n", name, elemType)
+	fmt.Fprintf(b, "\treturn c.ItemKeyFor(%q, elem)\n}\n\n", field)
+	return nil
+}
+
+// emitScopeConstructor writes a constructor naming the first n components of a
+// shard key, typed by what those components are.
+func emitScopeConstructor(b *strings.Builder, elem protoreflect.MessageDescriptor,
+	split *pb.Split, name, field string, n int) error {
+
+	var params, segments, doc []string
+	for i := 0; i < n; i++ {
+		by := split.GetBy()[i]
+		fd := elem.Fields().ByName(protoreflect.Name(lastPart(by.GetField())))
+		if fd == nil {
+			return fmt.Errorf("shard key %q is not a field of %s", by.GetField(), elem.FullName())
+		}
+		arg := unexported(by.GetField())
+
+		switch by.GetTransform() {
+		case pb.Transform_TRANSFORM_YEAR:
+			params = append(params, arg+"Year int")
+			segments = append(segments, fmt.Sprintf("protovcs.DateSegment(protovcspb.Transform_TRANSFORM_YEAR, %sYear, 1, 1)", arg))
+			doc = append(doc, by.GetField()+"'s year")
+		case pb.Transform_TRANSFORM_QUARTER:
+			params = append(params, arg+"Year int", arg+"Quarter int")
+			segments = append(segments, fmt.Sprintf("protovcs.DateSegment(protovcspb.Transform_TRANSFORM_QUARTER, %sYear, (%sQuarter-1)*3+1, 1)", arg, arg))
+			doc = append(doc, by.GetField()+"'s quarter")
+		case pb.Transform_TRANSFORM_MONTH:
+			params = append(params, arg+"Year int", arg+"Month int")
+			segments = append(segments, fmt.Sprintf("protovcs.DateSegment(protovcspb.Transform_TRANSFORM_MONTH, %sYear, %sMonth, 1)", arg, arg))
+			doc = append(doc, by.GetField()+"'s month")
+		case pb.Transform_TRANSFORM_DAY:
+			params = append(params, arg+"Year int", arg+"Month int", arg+"Day int")
+			segments = append(segments, fmt.Sprintf("protovcs.DateSegment(protovcspb.Transform_TRANSFORM_DAY, %sYear, %sMonth, %sDay)", arg, arg, arg))
+			doc = append(doc, by.GetField()+"'s day")
+		case pb.Transform_TRANSFORM_HASH:
+			// A hashed component has no readable form, so a caller names the
+			// value and the bucket is computed the same way a write computes it.
+			goType, conv := goScalar(fd)
+			params = append(params, arg+" "+goType)
+			segments = append(segments, fmt.Sprintf("protovcs.HashSegment(%s, %d)", conv(arg), by.GetBuckets()))
+			doc = append(doc, by.GetField())
+		default:
+			goType, conv := goScalar(fd)
+			params = append(params, arg+" "+goType)
+			segments = append(segments, segmentCall(fd, conv(arg)))
+			doc = append(doc, by.GetField())
+		}
+	}
+
+	fnName := fmt.Sprintf("%sFor%s", name, exported(split.GetBy()[n-1].GetField()))
+	if n < len(split.GetBy()) {
+		fnName = fmt.Sprintf("%sBy%s", name, exported(split.GetBy()[n-1].GetField()))
+	}
+
+	fmt.Fprintf(b, "// %s covers the items of %q with the given %s.\n", fnName, field, strings.Join(doc, " and "))
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// The segments are formatted by the same code a write uses, so a caller never\n")
+	fmt.Fprintf(b, "// spells one and cannot spell one differently.\n")
+	fmt.Fprintf(b, "func %s(%s) %sScope {\n", fnName, strings.Join(params, ", "), name)
+	fmt.Fprintf(b, "\tprefix := %q\n", field)
+	for _, seg := range segments {
+		fmt.Fprintf(b, "\tprefix += \"/\" + %s\n", seg)
+	}
+	fmt.Fprintf(b, "\treturn %sScope{scope: protovcs.Prefix(prefix)}\n}\n\n", name)
+	return nil
+}
+
+// goScalar returns the Go type for a scalar field and a conversion to what the
+// segment formatter takes.
+func goScalar(fd protoreflect.FieldDescriptor) (string, func(string) string) {
+	id := func(s string) string { return s }
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		return "string", id
+	case protoreflect.BoolKind:
+		return "bool", id
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		return "int32", func(s string) string { return "int64(" + s + ")" }
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		return "int64", id
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		return "uint32", func(s string) string { return "uint64(" + s + ")" }
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		return "uint64", id
+	default:
+		return "string", id
+	}
+}
+
+func segmentCall(fd protoreflect.FieldDescriptor, arg string) string {
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		return "protovcs.StringSegment(" + arg + ")"
+	case protoreflect.BoolKind:
+		return "protovcs.BoolSegment(" + arg + ")"
+	case protoreflect.Uint32Kind, protoreflect.Uint64Kind, protoreflect.Fixed32Kind, protoreflect.Fixed64Kind:
+		return "protovcs.UintSegment(" + arg + ")"
+	default:
+		return "protovcs.IntSegment(" + arg + ")"
+	}
+}
+
+// elementOf resolves a split's field to the message its elements are.
+func elementOf(md protoreflect.MessageDescriptor, path string) protoreflect.MessageDescriptor {
+	cur := md
+	parts := strings.Split(path, ".")
+	for i, part := range parts {
+		fd := cur.Fields().ByName(protoreflect.Name(part))
+		if fd == nil {
+			return nil
+		}
+		if i == len(parts)-1 {
+			if fd.Kind() != protoreflect.MessageKind {
+				return nil
+			}
+			return fd.Message()
+		}
+		if fd.Kind() != protoreflect.MessageKind {
+			return nil
+		}
+		cur = fd.Message()
+	}
+	return nil
+}
+
+// goTypeOf returns the package alias and import path for a message's generated
+// Go type, read from its file's go_package option.
+func goTypeOf(md protoreflect.MessageDescriptor) (alias, importPath string) {
+	opts, ok := md.ParentFile().Options().(*descriptorpb.FileOptions)
+	if !ok || opts == nil {
+		return "", ""
+	}
+	gp := opts.GetGoPackage()
+	if gp == "" {
+		return "", ""
+	}
+	if i := strings.LastIndex(gp, ";"); i >= 0 {
+		return gp[i+1:], gp[:i]
+	}
+	return gp[strings.LastIndex(gp, "/")+1:], gp
+}
+
+func sortedScopes(in []*pb.Scope) []*pb.Scope {
+	out := make([]*pb.Scope, len(in))
+	copy(out, in)
+	sort.Slice(out, func(i, j int) bool { return out[i].GetName() < out[j].GetName() })
+	return out
+}
+
+func lastPart(path string) string {
+	if i := strings.LastIndex(path, "."); i >= 0 {
+		return path[i+1:]
+	}
+	return path
+}
+
+func unexported(name string) string {
+	e := exported(name)
+	if e == "" {
+		return "v"
+	}
+	return strings.ToLower(e[:1]) + e[1:]
+}
+
+func prototextMarshal(l *pb.Layout) (string, error) {
+	out, err := (prototext.MarshalOptions{Multiline: true, Indent: "  "}).Marshal(l)
+	if err != nil {
+		return "", err
+	}
+	return string(out), nil
+}
+
+func backquote(s string) string {
+	if strings.Contains(s, "`") {
+		return fmt.Sprintf("%q", s)
+	}
+	return "`" + s + "`"
+}
+
+// exported turns a field path into a Go identifier.
+func exported(name string) string {
+	parts := strings.FieldsFunc(name, func(r rune) bool { return r == '_' || r == '.' || r == '-' })
+	var b strings.Builder
+	for _, p := range parts {
+		if p == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(p[:1]))
+		b.WriteString(p[1:])
+	}
+	return b.String()
+}
+
+// isSplit reports whether a layout splits a field into items of its own.
+//
+// The distinction decides which scope reaches it, and getting it wrong is
+// silent: a scope pointed at a key nothing lives under produces an empty field
+// rather than a failure.
+func isSplit(layout *pb.Layout, field string) (bool, error) {
+	if field == "" {
+		return false, fmt.Errorf("a scope includes a field with no name")
+	}
+	for _, s := range layout.GetSplits() {
+		if s.GetField() == field {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// elements; a scalar returns its value.
+func emitRootAccessor(b *strings.Builder, md protoreflect.MessageDescriptor,
+	field, viewName, rootType string) error {
+
+	fd := md.Fields().ByName(protoreflect.Name(field))
+	if fd == nil {
+		return fmt.Errorf("scope includes %q, which %s does not have", field, md.FullName())
+	}
+	if fd.IsMap() {
+		return fmt.Errorf("scope includes %q, which is a map; maps are not covered by a scope yet", field)
+	}
+	acc := exported(field)
+
+	var goType string
+	switch {
+	case fd.IsList() && fd.Kind() == protoreflect.MessageKind:
+		elemAlias, _ := goTypeOf(fd.Message())
+		goType = "[]*" + elemAlias + "." + string(fd.Message().Name())
+	case fd.IsList():
+		scalar, _ := goScalar(fd)
+		goType = "[]" + scalar
+	case fd.Kind() == protoreflect.MessageKind:
+		alias, _ := goTypeOf(fd.Message())
+		goType = "*" + alias + "." + string(fd.Message().Name())
+	default:
+		goType, _ = goScalar(fd)
+	}
+
+	fmt.Fprintf(b, "// %s returns %q, which lives in the root item.\n", acc, field)
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// One item holds it rather than many, because no layout rule splits it.\n")
+	fmt.Fprintf(b, "func (v *%sView) %s() %s {\n", viewName, acc, goType)
+	fmt.Fprintf(b, "\tvar zero %s\n", goType)
+	fmt.Fprintf(b, "\tfor _, it := range v.part.Items() {\n")
+	fmt.Fprintf(b, "\t\tif it.Key != protovcs.RootItemKey {\n\t\t\tcontinue\n\t\t}\n")
+	fmt.Fprintf(b, "\t\tfrag, ok := it.Fragment.(*%s)\n", rootType)
+	fmt.Fprintf(b, "\t\tif !ok {\n\t\t\tcontinue\n\t\t}\n")
+	fmt.Fprintf(b, "\t\treturn frag.Get%s()\n", acc)
+	fmt.Fprintf(b, "\t}\n")
+	fmt.Fprintf(b, "\treturn zero\n}\n\n")
+	return nil
+}
+
+// emitMeta writes the commit metadata type for this store.
+//
+// A type of its own rather than protovcs.CommitMeta, because the details a
+// commit carries have a declared type here and a proto.Message there. A caller
+// assigning the wrong message should fail to compile rather than fail at the
+// write, which is the same reason every other surface in this package is
+// generated.
+func emitMeta(b *strings.Builder, c *protovcs.Compiled, layout *pb.Layout) {
+	cm := c.CommitMessage()
+
+	fmt.Fprintf(b, "// Meta is what a commit records about who made it and why.\n")
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// Sealed with the commit, so a server stores it and reads none of it.\n")
+	if cm != nil {
+		fmt.Fprintf(b, "//\n")
+		fmt.Fprintf(b, "// Details is typed as %s, which is what layout %q\n", cm.FullName(), layout.GetName())
+		fmt.Fprintf(b, "// declares as its commit_message.\n")
+	}
+	fmt.Fprintf(b, "type Meta struct {\n")
+	fmt.Fprintf(b, "\t// One line, for a list of commits.\n")
+	fmt.Fprintf(b, "\tTitle string\n\n")
+	fmt.Fprintf(b, "\t// The rest, for someone reading one commit. Usually empty.\n")
+	fmt.Fprintf(b, "\tDescription string\n\n")
+	fmt.Fprintf(b, "\t// Who made the change.\n")
+	fmt.Fprintf(b, "\tAuthors []protovcs.Author\n\n")
+	fmt.Fprintf(b, "\t// The application build that wrote it, such as \"notes-ios/2.14.1\".\n")
+	fmt.Fprintf(b, "\tClient string\n\n")
+	fmt.Fprintf(b, "\t// Short annotations. Small: every reader of the history downloads them.\n")
+	fmt.Fprintf(b, "\tLabels map[string]string\n")
+	if cm != nil {
+		alias, _ := goTypeOf(cm)
+		fmt.Fprintf(b, "\n\t// The application's own record of the change. Nil is always allowed.\n")
+		fmt.Fprintf(b, "\tDetails *%s.%s\n", alias, cm.Name())
+	}
+	fmt.Fprintf(b, "}\n\n")
+
+	fmt.Fprintf(b, "// Commit is Meta for the ordinary case: one author, one line.\n")
+	fmt.Fprintf(b, "func Commit(title, author, email string) Meta {\n")
+	fmt.Fprintf(b, "\treturn Meta{Title: title, Authors: []protovcs.Author{{Name: author, Email: email}}}\n}\n\n")
+
+	fmt.Fprintf(b, "// inner converts to what lib/protovcs takes.\n")
+	fmt.Fprintf(b, "func (m Meta) inner() (protovcs.CommitMeta, error) {\n")
+	fmt.Fprintf(b, "\tout := protovcs.CommitMeta{\n")
+	fmt.Fprintf(b, "\t\tTitle:       m.Title,\n")
+	fmt.Fprintf(b, "\t\tDescription: m.Description,\n")
+	fmt.Fprintf(b, "\t\tAuthors:     m.Authors,\n")
+	fmt.Fprintf(b, "\t\tClient:      m.Client,\n")
+	fmt.Fprintf(b, "\t\tLabels:      m.Labels,\n")
+	fmt.Fprintf(b, "\t}\n")
+	if cm != nil {
+		fmt.Fprintf(b, "\tif m.Details != nil {\n")
+		fmt.Fprintf(b, "\t\tout.Details = m.Details\n")
+		fmt.Fprintf(b, "\t}\n")
+	}
+	fmt.Fprintf(b, "\treturn out, nil\n}\n\n")
+}
+
+// emitLog writes the typed history reader.
+func emitLog(b *strings.Builder, c *protovcs.Compiled) {
+	cm := c.CommitMessage()
+
+	fmt.Fprintf(b, "// CommitInfo is one entry of this store's history, opened.\n")
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// Everything but ID and Parents was sealed: a server holds the commit graph\n")
+	fmt.Fprintf(b, "// in the clear because it must, and holds the rest as bytes it cannot read.\n")
+	fmt.Fprintf(b, "type CommitInfo struct {\n")
+	fmt.Fprintf(b, "\tID      protovcs.CommitID\n")
+	fmt.Fprintf(b, "\tParents []protovcs.CommitID\n\n")
+	fmt.Fprintf(b, "\tTitle       string\n")
+	fmt.Fprintf(b, "\tDescription string\n")
+	fmt.Fprintf(b, "\tAuthors     []protovcs.Author\n")
+	fmt.Fprintf(b, "\tClient      string\n")
+	fmt.Fprintf(b, "\tLabels      map[string]string\n\n")
+	fmt.Fprintf(b, "\t// The writer's clock, not the server's.\n")
+	fmt.Fprintf(b, "\tTime time.Time\n\n")
+	fmt.Fprintf(b, "\t// The branch it was written on, as recorded then.\n")
+	fmt.Fprintf(b, "\tBranch string\n\n")
+	fmt.Fprintf(b, "\t// What the layout said the data meant at that commit.\n")
+	fmt.Fprintf(b, "\tSchemaVersion uint32\n")
+	if cm != nil {
+		alias, _ := goTypeOf(cm)
+		fmt.Fprintf(b, "\n\t// The application's own record. Nil when the writer supplied none.\n")
+		fmt.Fprintf(b, "\tDetails *%s.%s\n", alias, cm.Name())
+	}
+	fmt.Fprintf(b, "}\n\n")
+
+	fmt.Fprintf(b, "// Log returns the branch's history, newest first.\n")
+	fmt.Fprintf(b, "//\n")
+	fmt.Fprintf(b, "// First parents only, so this is the branch's own line rather than\n")
+	fmt.Fprintf(b, "// everything that ever fed into it. Each entry costs one commit fetch and\n")
+	fmt.Fprintf(b, "// no chunk reads, so the cost is in the number of commits rather than in\n")
+	fmt.Fprintf(b, "// the size of the store.\n")
+	fmt.Fprintf(b, "func (b *Branch) Log(ctx context.Context, opts protovcs.LogOptions) ([]CommitInfo, error) {\n")
+	fmt.Fprintf(b, "\tentries, err := b.inner.Log(ctx, opts)\n")
+	fmt.Fprintf(b, "\tif err != nil {\n\t\treturn nil, err\n\t}\n\n")
+	fmt.Fprintf(b, "\tout := make([]CommitInfo, 0, len(entries))\n")
+	fmt.Fprintf(b, "\tfor _, e := range entries {\n")
+	fmt.Fprintf(b, "\t\tinfo := CommitInfo{\n")
+	fmt.Fprintf(b, "\t\t\tID:            e.ID,\n")
+	fmt.Fprintf(b, "\t\t\tParents:       e.Parents,\n")
+	fmt.Fprintf(b, "\t\t\tTitle:         e.Title,\n")
+	fmt.Fprintf(b, "\t\t\tDescription:   e.Description,\n")
+	fmt.Fprintf(b, "\t\t\tAuthors:       e.Authors,\n")
+	fmt.Fprintf(b, "\t\t\tClient:        e.Client,\n")
+	fmt.Fprintf(b, "\t\t\tLabels:        e.Labels,\n")
+	fmt.Fprintf(b, "\t\t\tTime:          e.Time,\n")
+	fmt.Fprintf(b, "\t\t\tBranch:        e.Branch,\n")
+	fmt.Fprintf(b, "\t\t\tSchemaVersion: e.SchemaVersion,\n")
+	fmt.Fprintf(b, "\t\t}\n")
+	if cm != nil {
+		alias, _ := goTypeOf(cm)
+		fmt.Fprintf(b, "\t\tif len(e.Details) > 0 {\n")
+		fmt.Fprintf(b, "\t\t\t// Unmarshalled straight into the declared type. A reader with\n")
+		fmt.Fprintf(b, "\t\t\t// no such type calls Store.OpenDetails instead, which resolves\n")
+		fmt.Fprintf(b, "\t\t\t// against the descriptors the store carries.\n")
+		fmt.Fprintf(b, "\t\t\tdetails := &%s.%s{}\n", alias, cm.Name())
+		fmt.Fprintf(b, "\t\t\tif err := proto.Unmarshal(e.Details, details); err != nil {\n")
+		fmt.Fprintf(b, "\t\t\t\treturn nil, fmt.Errorf(\"%%s: commit %%s has unreadable details: %%w\", RootMessage, e.ID, err)\n")
+		fmt.Fprintf(b, "\t\t\t}\n")
+		fmt.Fprintf(b, "\t\t\tinfo.Details = details\n")
+		fmt.Fprintf(b, "\t\t}\n")
+	}
+	fmt.Fprintf(b, "\t\tout = append(out, info)\n")
+	fmt.Fprintf(b, "\t}\n")
+	fmt.Fprintf(b, "\treturn out, nil\n}\n\n")
+}

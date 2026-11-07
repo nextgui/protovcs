@@ -1,0 +1,19 @@
+# The tests need IndexedDB, so Bazel does not run them. CI runs them in
+# Chromium with `GOOS=js GOARCH=wasm go test -exec wasmbrowsertest ./idbcache`.
+
+load("@rules_go//go:def.bzl", "go_library")
+
+go_library(
+    name = "idbcache",
+    srcs = [
+        "doc.go",
+        "heads.go",
+        "heads_js.go",
+        "heads_other.go",
+        "idbcache_js.go",
+        "idbcache_other.go",
+    ],
+    importpath = "github.com/nextgui/protovcs/idbcache",
+    visibility = ["//visibility:public"],
+    deps = ["//:protovcs"],
+)

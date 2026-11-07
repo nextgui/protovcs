@@ -1,0 +1,33 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("//bazel:checked_in.bzl", "checked_in_go")
+
+package(default_visibility = ["//cmd/protovcsgen:__pkg__"])
+
+# Fixtures for protovcsgen's test. Test only.
+proto_library(
+    name = "markedpb_proto",
+    srcs = ["marked.proto"],
+    deps = ["@protobuf//:descriptor_proto"],
+)
+
+go_proto_library(
+    name = "markedpb_go_proto",
+    importpath = "github.com/nextgui/protovcs/cmd/protovcsgen/testdata/markedpb",
+    proto = ":markedpb_proto",
+)
+
+go_library(
+    name = "markedpb",
+    embed = [":markedpb_go_proto"],
+    importpath = "github.com/nextgui/protovcs/cmd/protovcsgen/testdata/markedpb",
+)
+
+# For `go test ./...` without Bazel.
+checked_in_go(
+    name = "write_go",
+    src = ":markedpb_go_proto",
+    files = {"marked.pb.go": "marked.pb.go"},
+    output_group = "go_generated_srcs",
+)

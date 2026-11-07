@@ -1,0 +1,24 @@
+
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "storetoken",
+    srcs = ["storetoken.go"],
+    importpath = "github.com/nextgui/protovcs/storetoken",
+    deps = [
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//proto",
+    ],
+)
+
+go_test(
+    name = "storetoken_test",
+    srcs = ["storetoken_test.go"],
+    deps = [
+        ":storetoken",
+        "//proto/protovcs/v1",
+    ],
+)

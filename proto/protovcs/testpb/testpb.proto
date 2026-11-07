@@ -1,0 +1,150 @@
+// A message shaped to exercise protovcs, standing in for a real one.
+//
+// protovcs is a library and its tests cannot depend on any product's schema.
+// This message exists so the test suite has something with every shape that
+// matters: a repeated message field worth splitting, a date to shard on, a map
+// whose iteration order is random, a bytes field big enough to split, floating
+// point, and a reserved field number so that a deleted field is covered.
+//
+// It is not stored anywhere. Nothing outside tests and the golden corpus may
+// depend on it.
+syntax = "proto3";
+
+package nextgui.protovcs.testpb;
+
+import "proto/protovcs/v1/annotations.proto";
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/testpb;testpb";
+
+// Store is the root message the tests version.
+message Store {
+  // Version marker, as a real stored message carries one.
+  Manifest manifest = 1;
+
+  // The collection worth splitting: many elements, each carrying its own shard
+  // key, growing without limit.
+  //
+  // Identified by id, so the uniqueness check and the default ordering have
+  // something to exercise.
+  repeated Record records = 2 [(nextgui.protovcs.v1.identity) = "id"];
+
+  // A small collection split one item per element, the other shape a layout has
+  // to handle.
+  repeated Account accounts = 3;
+
+  // Fields no rule mentions, which land in the root item.
+  // A scalar, which lands in the root item.
+  string name = 4;
+
+  // A second one, so the root item holds more than a single field.
+  int64 revision = 5;
+
+  // A singular message holding a repeated field, so a split through a
+  // non-repeated path has something to reach.
+  Group group = 6;
+}
+
+// Group is a singular submessage with a collection inside it.
+//
+// Its only purpose is to be reachable at "group.members", which is the nested
+// path a split may legally take.
+message Group {
+  // Reachable at "group.members".
+  repeated Account members = 1;
+}
+
+// Manifest stands in for the version marker a stored message carries.
+message Manifest {
+  // What the data means.
+  uint32 schema_version = 1;
+}
+
+// Account is a small record split one item per element.
+message Account {
+  // Shard key, so each account is its own item.
+  string id = 1;
+
+  // Payload, so an item is not only its key.
+  string label = 2;
+}
+
+// Record has one field of every kind whose canonical encoding needs deciding.
+message Record {
+  // Order key within an item, so elements come back in a fixed order.
+  string id = 1;
+
+  // Shard key components. A composite key over these two is the case a real
+  // layout uses.
+  string group = 2;
+  // The other shard key component, and what the date transforms are tested on.
+  Date date = 3;
+
+  // A signed integer, whose canonical encoding is a varint.
+  int64 amount = 4;
+
+  // Repeated scalar: packed in the canonical encoding whatever the field says.
+  repeated string tags = 5;
+
+  // A map, whose Go iteration order is random. Two encodings of the same map
+  // must still be the same bytes.
+  map<string, string> attributes = 6;
+
+  // A submessage, so the reachability walk the lock check does has somewhere to
+  // go.
+  Nested nested = 7;
+
+  // Big enough to be worth splitting into pieces.
+  bytes payload = 8;
+
+  // Floating point, where the bit pattern rather than the value is what gets
+  // encoded.
+  double score = 9;
+
+  // A second repeated scalar, including negative values, which encode as
+  // ten-byte varints rather than the length their type suggests.
+  repeated int32 counters = 10;
+
+  // Deleted. Present so that the lock's rules and the round trip are exercised
+  // against a number that must never come back.
+  reserved 11;
+  reserved "old_category";
+}
+
+// Nested is a submessage, reached only through Record.
+message Nested {
+  // A scalar.
+  string note = 1;
+
+  // A packed repeated scalar inside a submessage.
+  repeated int64 values = 2;
+}
+
+// Date is a calendar date, deliberately the same shape as //proto/types so the
+// date transforms are tested against something realistic.
+message Date {
+  // Four digits.
+  int32 year = 1;
+
+  // One to twelve. A value outside that is refused rather than filed somewhere
+  // nothing would look for it.
+  int32 month = 2;
+
+  // One to thirty-one.
+  int32 day = 3;
+}
+
+// Change is the commit message type the test layout declares.
+//
+// The shape a real application reaches for: what produced a change and how much
+// it touched, so a history can be filtered by field rather than by parsing
+// prose.
+message Change {
+  // What made the change: "import", "user", "repair".
+  string source = 1;
+
+  // How many records it added, so a numeric field is exercised.
+  int32 records_added = 2;
+
+  // A repeated field, so the canonical encoding of details is exercised too.
+  repeated string touched_groups = 3;
+}

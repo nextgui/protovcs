@@ -1,0 +1,280 @@
+// Creating stores, limiting them, and asking what they have used.
+//
+// Separate from StoreService because it is a different authorization question.
+// A client credential reads and writes one store's chunks. Creating a store,
+// raising its ceiling or deleting it is something the service that owns the
+// account does, and no client credential can.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+// StoreAdminService is what the service owning an account talks to.
+service StoreAdminService {
+  // CreateStore records a new store and its limits. Idempotent on store_id, so
+  // a retry after an unknown outcome does not leave a second store.
+  rpc CreateStore(CreateStoreRequest) returns (CreateStoreResponse);
+  // GetStore returns one store's record, including its usage.
+  rpc GetStore(GetStoreRequest) returns (GetStoreResponse);
+
+  // ListStores answers operational questions about a fleet of stores.
+  //
+  // The one that motivated it: retiring a schema means deleting the code that
+  // reads it, and that is only safe when no store is still below the new
+  // version. This is how that is checked rather than assumed.
+  rpc ListStores(ListStoresRequest) returns (ListStoresResponse);
+
+  // SetQuota replaces a store's limits. Lowering one below current usage does
+  // not delete anything; it refuses the next write.
+  rpc SetQuota(SetQuotaRequest) returns (SetQuotaResponse);
+  // GetUsage returns what a store is consuming, for billing and for showing a
+  // user where they are against their ceiling.
+  rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
+
+  // DeleteStore marks a store for deletion. Its chunks are removed by the
+  // maintenance job after the retention window, not by this call: a deletion
+  // that cannot be undone for the first hour is a deletion that will one day be
+  // regretted.
+  rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+
+  // TriggerMaintenance runs collection, compaction or reconciliation now
+  // instead of on the schedule.
+  rpc TriggerMaintenance(TriggerMaintenanceRequest) returns (TriggerMaintenanceResponse);
+}
+
+// Store is one versioned message and everything the server knows about it.
+message Store {
+  // Supplied by the caller at creation and never changed.
+  string store_id = 1;
+
+  // Who this store belongs to, in whatever namespace the caller uses. protovcs
+  // does not interpret it.
+  string owner = 2;
+
+  // What this store may consume.
+  Quota quota = 3;
+
+  // What it is consuming now.
+  Usage usage = 4;
+
+  // Highest Layout.schema_version among the heads of this store's branches.
+  //
+  // The only thing the server knows about the data, and it knows it because
+  // retirement is otherwise unanswerable. See Commit.schema_version.
+  uint32 head_schema_version = 5;
+
+  // When the store was created.
+  google.protobuf.Timestamp created_at = 6;
+
+  // Whether the store accepts writes.
+  State state = 7;
+
+  // Refuse a commit written below this schema version.
+  //
+  // Set by an operator once every client has migrated. Until then it is zero
+  // and anything is accepted. A client is already supposed to refuse to write
+  // an old schema over a newer store, but "supposed to" is a property of the
+  // client binary somebody is running, and the point of this is that the server
+  // does not have to trust it. An old build left running on a laptop for a year
+  // is the case it exists for.
+  uint32 min_writable_schema_version = 8;
+
+  // State is whether a store is usable.
+  enum State {
+    // Never set on a stored record.
+    STATE_UNSPECIFIED = 0;
+
+    // Reads and writes are accepted.
+    STATE_ACTIVE = 1;
+
+    // Deleted by a caller, chunks not yet removed. Reads and writes are
+    // refused; the data is still recoverable until the retention window ends.
+    STATE_DELETING = 2;
+  }
+}
+
+// Quota is what one store may consume.
+//
+// Every limit is checked before an upload rather than at commit time, so a
+// client that has run out learns before it sends anything and can say which
+// ceiling it hit.
+message Quota {
+  // Total sealed bytes held, after deduplication. Chunk names are keyed per
+  // store, so nothing deduplicates across stores and this is exactly the sum of
+  // this store's own chunks.
+  uint64 max_bytes = 1;
+
+  // Discrete chunks. The limit that catches a layout splitting a message far
+  // too finely, which costs little in bytes and a great deal in operations.
+  uint64 max_objects = 2;
+
+  // One chunk. Caps the damage a single bad write can do.
+  uint64 max_chunk_bytes = 3;
+
+  // History depth. Bounds a client committing in a loop.
+  uint64 max_commits = 4;
+
+  // Branches. Bounds a client creating them in a loop.
+  uint32 max_refs = 5;
+
+  // Written bytes per rolling day, to bound cost when something loops.
+  uint64 max_bytes_per_day = 6;
+}
+
+// Usage is what a store is consuming, counted in the same transaction as the
+// write that moved it so it cannot drift by a process dying between two writes.
+message Usage {
+  // Total sealed bytes held.
+  uint64 bytes = 1;
+
+  // Discrete chunks held.
+  uint64 objects = 2;
+
+  // Commits recorded, across every branch.
+  uint64 commits = 3;
+
+  // Branches that exist.
+  uint32 refs = 4;
+
+  // Sealed bytes written on the day in bytes_today_day. A reader whose
+  // current day differs treats it as zero.
+  uint64 bytes_today = 5;
+
+  // Counted but not yet committed, held by live reservations.
+  uint64 reserved_bytes = 6;
+  // Chunks held by live reservations, counted against the limit so two writers
+  // are not each told there is room for the last of it.
+  uint64 reserved_objects = 7;
+
+  // The day bytes_today counts for: a calendar date in America/Los_Angeles,
+  // as days since 1970-01-01.
+  int64 bytes_today_day = 8;
+}
+
+// CreateStoreRequest asks for a new store.
+message CreateStoreRequest {
+  // Supplied by the caller so that creation is idempotent: a retry after an
+  // unknown outcome must not leave a second store nobody knows about.
+  string store_id = 1;
+
+  // Whose store it is, in whatever namespace the caller uses.
+  string owner = 2;
+
+  // Its limits. Zero in any field means that limit is not enforced.
+  Quota quota = 3;
+}
+
+// CreateStoreResponse carries the store, new or already existing.
+message CreateStoreResponse {
+  // The record as stored.
+  Store store = 1;
+}
+
+// GetStoreRequest asks for one store's record.
+message GetStoreRequest {
+  // Which store.
+  string store_id = 1;
+}
+
+// GetStoreResponse carries the record.
+message GetStoreResponse {
+  // The record as stored.
+  Store store = 1;
+}
+
+// ListStoresRequest filters a fleet of stores.
+message ListStoresRequest {
+  // Only this owner's stores. Empty matches every owner.
+  string owner = 1;
+
+  // Only stores whose head is below this version. Zero means no filter.
+  uint32 head_schema_version_below = 2;
+
+  // Only stores in this state. Unspecified matches every state.
+  Store.State state = 3;
+
+  // How many to return. Zero lets the server choose.
+  uint32 page_size = 4;
+
+  // From a previous response. Empty starts at the beginning.
+  string page_token = 5;
+}
+
+// ListStoresResponse carries one page of matches.
+message ListStoresResponse {
+  // The matching records.
+  repeated Store stores = 1;
+
+  // Pass to the next request. Empty means this was the last page.
+  string next_page_token = 2;
+}
+
+// SetQuotaRequest replaces a store's limits.
+message SetQuotaRequest {
+  // Which store.
+  string store_id = 1;
+
+  // The limits, replacing the previous set entirely.
+  Quota quota = 2;
+}
+
+// SetQuotaResponse carries the record after the change.
+message SetQuotaResponse {
+  // The record as stored.
+  Store store = 1;
+}
+
+// GetUsageRequest asks what a store is consuming.
+message GetUsageRequest {
+  // Which store.
+  string store_id = 1;
+}
+
+// GetUsageResponse carries the counters.
+message GetUsageResponse {
+  // What the store is consuming now.
+  Usage usage = 1;
+}
+
+// DeleteStoreRequest marks a store for deletion.
+message DeleteStoreRequest {
+  // Which store.
+  string store_id = 1;
+}
+
+// DeleteStoreResponse carries the record, now marked for deletion.
+message DeleteStoreResponse {
+  // The record as stored.
+  Store store = 1;
+}
+
+// TriggerMaintenanceRequest runs a maintenance job now.
+message TriggerMaintenanceRequest {
+  // Which store.
+  string store_id = 1;
+
+  // Which job.
+  Kind kind = 2;
+
+  // Kind is which maintenance job to run.
+  enum Kind {
+    // Never a valid request.
+    KIND_UNSPECIFIED = 0;
+
+    // Delete chunks no commit reaches and no live reservation covers.
+    KIND_COLLECT = 1;
+
+    // Recount usage from the backend and correct drift. Drift is not expected;
+    // this exists so that it is a detected condition rather than a surprise.
+    KIND_RECONCILE = 2;
+  }
+}
+
+// TriggerMaintenanceResponse names the run, so it can be followed.
+message TriggerMaintenanceResponse {
+  // Opaque, for correlating with logs.
+  string job_id = 1;
+}

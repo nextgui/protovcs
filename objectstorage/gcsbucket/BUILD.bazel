@@ -1,0 +1,16 @@
+load("@rules_go//go:def.bzl", "go_library")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "gcsbucket",
+    srcs = ["gcsbucket.go"],
+    importpath = "github.com/nextgui/protovcs/objectstorage/gcsbucket",
+    deps = [
+        "//objectstorage",
+        "@com_google_cloud_go_storage//:storage",
+        "@org_golang_google_api//googleapi",
+        "@org_golang_google_api//iterator",
+        "@org_golang_google_api//option",
+    ],
+)

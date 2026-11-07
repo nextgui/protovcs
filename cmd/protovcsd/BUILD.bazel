@@ -1,0 +1,23 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "protovcsd_lib",
+    srcs = ["main.go"],
+    importpath = "github.com/nextgui/protovcs/cmd/protovcsd",
+    deps = [
+        "//connectserver",
+        "//objectstorage",
+        "//objectstorage/gcsbucket",
+        "//server",
+        "//storetoken",
+    ],
+)
+
+go_binary(
+    name = "protovcsd",
+    embed = [":protovcsd_lib"],
+    pure = "on",
+    static = "on",
+)

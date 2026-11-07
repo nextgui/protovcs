@@ -1,0 +1,65 @@
+// Fixtures for the check on messages marked never to be stored: messages that
+// reach a marked message by each kind of field, and one that reaches none.
+syntax = "proto3";
+
+package protovcsgen.testdata;
+
+import "google/protobuf/descriptor.proto";
+
+option go_package = "github.com/nextgui/protovcs/cmd/protovcsgen/testdata/markedpb";
+
+// never_stored marks a message as a raw key, for the test to pass to
+// --refuse_marked.
+extend google.protobuf.MessageOptions {
+  bool never_stored = 50810;
+}
+
+// Secret stands for a raw key.
+message Secret {
+  option (never_stored) = true;
+
+  bytes key = 1;
+}
+
+// Wrapper holds a Secret one level down.
+message Wrapper {
+  Secret secret = 1;
+}
+
+// Clean reaches nothing marked. Bytes fields are allowed.
+message Clean {
+  string id = 1;
+  bytes sealed = 2;
+  repeated Clean children = 3;
+}
+
+message HoldsDirectly {
+  string id = 1;
+  Secret secret = 2;
+}
+
+message HoldsNested {
+  string id = 1;
+  repeated Wrapper wrappers = 2;
+}
+
+message HoldsInMap {
+  string id = 1;
+  map<string, Wrapper> wrappers = 2;
+}
+
+message HoldsInOneof {
+  string id = 1;
+
+  oneof which {
+    string name = 2;
+    Secret secret = 3;
+  }
+}
+
+// Recursive refers to itself as well as to a Secret, so the walk has to stop.
+message Recursive {
+  string id = 1;
+  repeated Recursive children = 2;
+  Wrapper wrapper = 3;
+}

@@ -1,0 +1,41 @@
+load("@rules_go//go:def.bzl", "go_binary", "go_library")
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "protovcsgen_lib",
+    srcs = [
+        "lockcheck.go",
+        "main.go",
+        "marked.go",
+    ],
+    importpath = "github.com/nextgui/protovcs/cmd/protovcsgen",
+    deps = [
+        "//:protovcs",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//encoding/prototext",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
+)
+
+go_binary(
+    name = "protovcsgen",
+    embed = [":protovcsgen_lib"],
+)
+
+go_test(
+    name = "protovcsgen_test",
+    srcs = ["marked_test.go"],
+    embed = [":protovcsgen_lib"],
+    deps = [
+        "//cmd/protovcsgen/testdata/markedpb",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+    ],
+)

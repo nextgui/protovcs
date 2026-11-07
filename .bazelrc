@@ -1,0 +1,6 @@
+# Resolve protoc through toolchains, and use protobuf's prebuilt binary
+# rather than building it from source.
+common --incompatible_enable_proto_toolchain_resolution
+common --@protobuf//bazel/toolchains:prefer_prebuilt_protoc
+
+test --test_output=errors

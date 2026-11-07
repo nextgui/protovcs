@@ -1,0 +1,59 @@
+# The services below are served over Connect, not gRPC, like every other
+# service in this repository. Without this directive gazelle substitutes
+# go_grpc_v2 and every caller stops compiling.
+
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("//bazel:checked_in.bzl", "checked_in_go")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "protovcs_proto",
+    srcs = [
+        "annotations.proto",
+        "layout.proto",
+        "store.proto",
+        "storeadminservice.proto",
+        "storeservice.proto",
+        "token.proto",
+    ],
+    deps = [
+        "@protobuf//:descriptor_proto",
+        "@protobuf//:timestamp_proto",
+    ],
+)
+
+go_proto_library(
+    name = "protovcs_go_proto",
+    compilers = [
+        "@rules_go//proto:go_proto",
+        "//bazel:connect_go_proto_compiler",
+    ],
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/v1",
+    proto = ":protovcs_proto",
+)
+
+go_library(
+    name = "v1",
+    embed = [":protovcs_go_proto"],
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/v1",
+)
+
+# For `go get` and `go test ./...` without Bazel.
+checked_in_go(
+    name = "write_go",
+    src = ":protovcs_go_proto",
+    files = {
+        "annotations.pb.go": "annotations.pb.go",
+        "layout.pb.go": "layout.pb.go",
+        "store.pb.go": "store.pb.go",
+        "storeadminservice.connect.go": "storeadminservice.connect.go",
+        "storeadminservice.pb.go": "storeadminservice.pb.go",
+        "storeservice.connect.go": "storeservice.connect.go",
+        "storeservice.pb.go": "storeservice.pb.go",
+        "token.pb.go": "token.pb.go",
+    },
+    output_group = "go_generated_srcs",
+)

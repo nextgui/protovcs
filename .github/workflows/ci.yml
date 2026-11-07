@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  bazel:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Restore the Bazel disk cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/bazel-disk
+          key: bazel-disk-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'go.sum') }}-${{ github.sha }}
+          restore-keys: |
+            bazel-disk-${{ runner.os }}-${{ hashFiles('.bazelversion', 'MODULE.bazel', 'go.sum') }}-
+            bazel-disk-${{ runner.os }}-
+      # The runner's bazelisk reads .bazelversion. The tests include one per
+      # checked-in generated file, which fails when the copy is stale.
+      - name: bazel test //...
+        run: bazelisk test --disk_cache="$HOME/.cache/bazel-disk" //...
+
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      # Generated layout code is checked in as protovcsgen writes it.
+      - name: gofmt
+        run: test -z "$(gofmt -l . | grep -v '\.pb\.layout\.go$')"
+      - name: go mod tidy
+        run: go mod tidy -diff
+      - name: go vet ./...
+        run: go vet ./...
+      - name: go test ./...
+        run: go test ./...
+
+  # idbcache keeps chunks in IndexedDB, which only a browser has.
+  browser:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.25"
+      - name: Install wasmbrowsertest
+        run: go install github.com/agnivade/wasmbrowsertest@v0.11.0
+      - name: idbcache in Chrome
+        run: GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/

@@ -1,0 +1,374 @@
+// What a protovcs server holds.
+//
+// Three kinds of object: chunks, commits and refs. A chunk is sealed bytes the
+// server cannot read. A commit is partly readable by the server, deliberately
+// and minimally. A ref is a branch name, hashed, pointing at a commit.
+//
+// # The chunk envelope is not in this file
+//
+// A chunk's stored bytes are not a protobuf. They are a version byte, a
+// twelve-byte nonce, then AES-256-GCM ciphertext and tag, with the chunk's own
+// name as additional authenticated data — the same envelope
+// //lib/vcsclient/cryptbackend uses, so there is one sealing format in this
+// repository rather than two. The messages below describe what is inside a
+// chunk once it is open.
+//
+// # What the server is allowed to see
+//
+// Everything a server can read is listed here and nothing else can be added
+// without a reason written down beside it. Today that is: a commit's parents,
+// the chunk ids it added, its format and schema version, and which commit a ref
+// points at. Each earns its place by making the server able to do something it
+// otherwise could not — collect garbage, serve a shallow clone, or tell an
+// operator which stores have not migrated.
+//
+// A pack hint adds one thing: which chunks a head reaches, in manifest order.
+// It lets the server pack those chunks together. A client sends it only after
+// reading the whole head, which already fetched exactly those chunks in that
+// order from the same server.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+import "google/protobuf/descriptor.proto";
+import "google/protobuf/timestamp.proto";
+import "proto/protovcs/v1/layout.proto";
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+// ManifestNode is one directory in the tree that names a version's items.
+//
+// Not one object listing every chunk. Item keys have path structure —
+// "entries/2026/08/14" — and the tree nests along it, one node per directory:
+// a root, one for the field, one per year, one per month. Five years of a
+// day-batched store is 1,680 items and 67 nodes.
+//
+// The nesting is what makes both halves cheap.
+//
+// Writing: changing one item rewrites only the nodes on its path, four of the
+// 67 above. Every other node keeps its chunk id, so it is not re-uploaded, and
+// two versions share almost their whole manifest. A flat list would be rewritten
+// whole for any change, and a commit would cost the manifest every time.
+//
+// Reading: a subtree whose id matches is equal wholesale, so a reader comparing
+// two versions never descends into it, and a reader wanting one month fetches
+// the nodes down to that month and no others. A flat list would have to be
+// downloaded entirely to read one item.
+//
+// The shape is a function of the item keys alone. Two clients holding the same
+// items therefore build the identical tree and their chunk ids agree — a tree
+// whose shape depended on insertion order would produce different ids for the
+// same data, and nothing would ever be shared between versions. Fanout is the
+// number of distinct values at one position of a shard key, which is small for
+// dates and ids, so a node fits in one chunk with no splitting rule.
+//
+// A node is stored as a chunk. So is every item it names.
+message ManifestNode {
+  // Entry is one child of this node: another node, or an item.
+  message Entry {
+    // One path segment, relative to this node.
+    string segment = 1;
+
+    // What this entry points at. A node holds a mix of both, because item keys
+    // of different depths can share a prefix.
+    oneof target {
+      // Chunk id of another ManifestNode.
+      bytes child = 2;
+
+      // Chunk id of an item.
+      bytes item = 3;
+    }
+
+    // Plaintext size and element count of the subtree or item below. A reader
+    // uses these to decide how to fetch — batch these forty, or take a
+    // different route — without decrypting anything beneath.
+    // Plaintext size of the subtree or item below.
+    uint64 total_bytes = 4;
+
+    // How many split elements are below. A reader uses both to decide how to
+    // fetch without decrypting anything beneath.
+    uint32 element_count = 5;
+  }
+
+  // Sorted by segment. Sorting is what makes a range of item keys a contiguous
+  // walk rather than a lookup per key.
+  repeated Entry entries = 1;
+}
+
+// Commit is one version of the whole message.
+//
+// Every commit names a complete copy, even though it only cost the items that
+// changed. Nothing is ever reconstructed by replaying diffs, which is what lets
+// a client fetch one commit and stop.
+message Commit {
+  // Hash of the record as stored. Set by the server on read; ignored on write.
+  bytes id = 1;
+
+  // Commit ids this one follows. In the clear, so the server can walk history
+  // to collect garbage and to serve a depth-limited clone. A commit graph is
+  // roughly what a git host sees.
+  repeated bytes parents = 2;
+
+  // Chunk ids in this commit's set and in none of its parents' sets.
+  //
+  // In the clear, and a delta rather than the full set. The full set of a large
+  // store is tens of megabytes and would be repeated on every commit. From
+  // these the server computes reachability as added(C) union reachable(parents),
+  // which is what makes garbage collection possible without reading anything.
+  //
+  // They are also what makes an incremental fetch one round trip: the union of
+  // added sets between two commits is exactly the chunk ids a client holding
+  // the older one might be missing.
+  repeated bytes added = 3;
+
+  // Sealed CommitPayload.
+  bytes payload = 4;
+
+  // Version of the protovcs formats themselves — chunk envelope, manifest node,
+  // this record. Distinct from schema_version, which is about the data. A build
+  // that does not recognise it refuses before reading anything else.
+  uint32 format_version = 5;
+
+  // Drawn at random by the writer, and not secret.
+  //
+  // A commit's name is the hash of this record with the id and the payload left
+  // out. The payload has to be left out because it is sealed under the name,
+  // which cannot depend on it. That would let two commits with the same
+  // parents and the same added chunks collide even though their payloads differ
+  // — the same content recommitted with a different message, for instance —
+  // and the second would silently replace the first. This makes each commit's
+  // name its own.
+  bytes naming_nonce = 7;
+
+  // Layout.schema_version this commit was written at, in the clear.
+  //
+  // The one field here that is not needed by the server to function. It is
+  // needed by an operator: retiring an old schema means deleting the code that
+  // reads it, and that is safe only when no store is still below the new
+  // version. Without this the question is unanswerable. It leaks an integer.
+  uint32 schema_version = 6;
+}
+
+// CommitPayload is the part of a commit only a client can read.
+message CommitPayload {
+  // Chunk id of the root ManifestNode.
+  bytes manifest_root = 1;
+
+  // Chunk id of the SchemaChunk this commit was written under.
+  bytes schema_chunk = 2;
+
+  // Merkle hash over every (item key, chunk id) pair, sorted.
+  //
+  // One value that answers "is this the same content", and a check on the whole
+  // materialization that does not depend on the manifest's structure being
+  // right.
+  bytes tree_digest = 3;
+
+  // The branch this was written on, for display. The ref itself is stored under
+  // a hash of this, because a name a user chose is content.
+  string branch = 4;
+
+  // A flat message string and a single author, replaced by the CommitMessage
+  // at 8. The numbers are reserved rather than reused: a build that predates
+  // the change would read a CommitMessage as a string and show a person
+  // something that is not what was written.
+  //
+  // The names are not reserved, because the field below deliberately takes one
+  // of them back. What must not be reused is the number.
+  reserved 5, 6;
+
+  // When, as the writer's clock said. Sealed, because a server already sees
+  // when it received the commit and does not need to be told again.
+  //
+  // Recorded by the system rather than by the author, which is why it is here
+  // and not in CommitMessage: an author says why a change was made, and a clock
+  // says when.
+  google.protobuf.Timestamp time = 7;
+
+  // Why the change was made, and by whom.
+  CommitMessage message = 8;
+}
+
+// CommitMessage is what a commit records about why it was made.
+//
+// Sealed inside CommitPayload, so a server stores it and can read none of it.
+// Every reader of a store's history downloads every commit's message, so this
+// is a record of what happened rather than a copy of what changed.
+message CommitMessage {
+  // One line, for a list.
+  //
+  // Not parsed out of a longer text the way git splits a subject from a body: a
+  // caller building a history view should not have to guess where the first
+  // line ends, and a caller writing one should not have to know the convention.
+  string title = 1;
+
+  // The rest, for someone reading one commit. Empty is ordinary — most changes
+  // are fully described by their title.
+  string description = 2;
+
+  // Who made the change.
+  //
+  // Repeated because a change can genuinely have more than one: a user acting
+  // through an agent, or an import a person triggered and a service performed.
+  // A single author would force one of them to be dropped, and which one gets
+  // dropped is exactly what an audit wants to know.
+  repeated Author authors = 3;
+
+  // What wrote it: an application build, such as "notes-ios/2.14.1".
+  //
+  // A field rather than a label, because the question it answers — did every
+  // damaged commit come from one build — is the first question asked when a
+  // store reads wrong, and an answer that depends on a convention having been
+  // followed is no answer.
+  string client = 4;
+
+  // Short annotations, as text: "source" -> "plaid", "reason" -> "backfill".
+  //
+  // The escape hatch that needs no schema change and stays readable forever.
+  // Sorted by the canonical encoder, so two clients writing the same
+  // annotations produce the same bytes.
+  //
+  // Deliberately weak. Anything worth nesting is worth declaring, and declaring
+  // it costs one message — see details. A structured free-form value here would
+  // become where the real record lives, unlocked, unversioned, and invisible to
+  // Layout.schema_version.
+  //
+  // Cheap only while it stays small. Every entry is downloaded by every reader
+  // of the history, so this annotates a change rather than recording it.
+  map<string, string> labels = 5;
+
+  // The application's own record of the change, encoded as the message
+  // Layout.commit_message names. Empty when the layout names none.
+  //
+  // Bytes rather than google.protobuf.Any: the commit names the SchemaChunk it
+  // was written under, that chunk carries both the layout and the descriptors,
+  // and the layout says what this is. An Any would resolve its type URL against
+  // whatever registry the reading client happens to have — so a type retired
+  // from the codebase would make every commit carrying it unreadable, which is
+  // the case this whole design exists to prevent.
+  //
+  // Encoded canonically, so that two clients recording the same change produce
+  // the same bytes. A payload is not named by its contents, so nothing breaks
+  // if they do not; but a history that differs by encoder is one nobody can
+  // compare.
+  bytes details = 6;
+}
+
+// Author is who made a change. Sealed with the rest of the payload, because a
+// name and an address are content.
+message Author {
+  // Display name.
+  string name = 1;
+
+  // Address, for attribution rather than for delivery.
+  string email = 2;
+
+  // What this author did, when there is more than one: "author", "committer",
+  // "agent", "service". Empty when a commit has a single author and the
+  // question does not arise.
+  string role = 3;
+}
+
+// SchemaChunk is what a commit was written under, stored inside the store.
+//
+// A client reading an old commit needs the layout that produced it and the
+// descriptors of the message it holds. Compiling both into every client would
+// mean a vault becomes unreadable the moment its version is retired from the
+// codebase, which is the opposite of what a version control system is for.
+//
+// Sealed like any other chunk, so a server learns neither the field names nor
+// the shape of the message.
+message SchemaChunk {
+  // How the message was split when this commit was written.
+  Layout layout = 1;
+
+  // Descriptors for the root message and everything it references, so a client
+  // with no generated code for this version can still materialize it as a
+  // dynamic message.
+  google.protobuf.FileDescriptorSet descriptors = 2;
+
+  // Repeated from Layout so that a reader can check them against each other. A
+  // schema chunk that disagrees with itself is a corrupted one.
+  string root_message = 3;
+  // Repeated from Layout for the same reason as root_message.
+  uint32 schema_version = 4;
+
+  // Which canonical encoding rules produced this version's chunk names.
+  //
+  // Separate from Commit.format_version, which is about parsing. These rules
+  // decide field order, packing, map entry order and where unknown fields go —
+  // they do not change how a chunk is read, they change what a chunk is called.
+  //
+  // A client whose rules differ can still read every chunk, because the bytes
+  // are ordinary protobuf. What it cannot do is recompute a name and get the
+  // same answer, so it would treat every item as new and re-upload the whole
+  // store while believing it was writing a delta. Recording the version means
+  // that is detected rather than paid for.
+  uint32 canonical_version = 5;
+}
+
+// Ref is a branch.
+message Ref {
+  // HMAC of the branch name under a key derived from the store's key. A branch
+  // name is something a person chose, so it is not stored in the clear. Lookup
+  // by name still works: compute the HMAC. Listing works by opening each head
+  // commit and reading the name from its sealed payload.
+  bytes name = 1;
+
+  // The commit this branch points at.
+  bytes commit = 2;
+
+  // Opaque value a writer must return to update this ref, so that a write can
+  // be refused when somebody else got there first. This is the only mutable
+  // state in a store, and therefore the only place concurrency has to be
+  // resolved.
+  string cas_token = 3;
+}
+
+// PackHintRecord is the latest pack hint a store received.
+//
+// Stored by the server, not by a client. One per store; a new hint replaces
+// it.
+message PackHintRecord {
+  // The commit the hint describes. It was the head of a ref when it arrived.
+  bytes commit = 1;
+
+  // Every chunk the commit reaches, each manifest node before its children and
+  // children in key order.
+  repeated bytes chunk_ids = 2;
+
+  // When the server received it.
+  google.protobuf.Timestamp received_at = 3;
+}
+
+// PackIndex lists a store's packs and where each packed chunk sits.
+//
+// Stored by the server, not by a client. Replaced whole, by compare-and-swap,
+// after every pack it names has been written.
+message PackIndex {
+  repeated Pack packs = 1;
+}
+
+// Pack is one object holding many sealed chunks back to back.
+message Pack {
+  // The pack's object name: the hex SHA-256 of its bytes.
+  string name = 1;
+
+  // The pack's length in bytes.
+  uint64 bytes = 2;
+
+  // The chunks in it, in the order they appear.
+  repeated PackMember members = 3;
+
+  // When the pack stopped being used for reads. Unset while it is in use. A
+  // retired pack is deleted once the grace period has passed, so a read that
+  // began with the previous index can finish.
+  google.protobuf.Timestamp retired_at = 4;
+}
+
+// PackMember is one chunk inside a pack.
+message PackMember {
+  bytes chunk_id = 1;
+  uint64 offset = 2;
+  uint64 length = 3;
+}

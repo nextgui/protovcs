@@ -1,0 +1,358 @@
+// Reading and writing a store.
+//
+// Every call here is available to a client holding a store's credential. It is
+// the whole surface, and none of it requires the server to understand what it
+// is storing.
+//
+// Creating a store, setting its limits and asking what it has used are not
+// here. Those are a different authorization question and live in
+// StoreAdminService.
+syntax = "proto3";
+
+package nextgui.protovcs.v1;
+
+import "proto/protovcs/v1/store.proto";
+
+option go_package = "github.com/nextgui/protovcs/proto/protovcs/v1;protovcsv1";
+
+// StoreService is what a client talks to.
+service StoreService {
+  // ListRefs returns every branch and the commit it points at.
+  //
+  // Names are hashed, so this tells a caller which branches exist without
+  // telling the server what they are called.
+  rpc ListRefs(ListRefsRequest) returns (ListRefsResponse);
+
+  // WatchRefs is ListRefs again every time a branch moves.
+  //
+  // For a client that wants to know when somebody else committed. Without it
+  // the only way to find out is to call ListRefs on a timer, which is slow when
+  // the timer is long and wasteful when it is short.
+  //
+  // It reports the same thing ListRefs does and reports it about every branch,
+  // so a caller does not say which branch it cares about and the server does
+  // not learn. The server already sees a ref move, because it performed it.
+  rpc WatchRefs(WatchRefsRequest) returns (stream WatchRefsResponse);
+
+  // UpdateRef moves a branch, or refuses.
+  //
+  // The only operation in protovcs that can fail because of concurrency.
+  // Everything else is immutable or content-addressed and can be retried,
+  // duplicated or interrupted with no coordination.
+  rpc UpdateRef(UpdateRefRequest) returns (UpdateRefResponse);
+
+  // GetCommits walks back from a commit, at most depth records.
+  //
+  // Depth 1 is what a shallow clone uses: a commit names a complete copy of the
+  // message, so no history is needed to read a version.
+  rpc GetCommits(GetCommitsRequest) returns (GetCommitsResponse);
+
+  // PutCommit records a new version. It does not move any branch; UpdateRef
+  // does that, and does it last.
+  //
+  // Fails if any chunk id the commit adds is not present, which is what stops a
+  // commit that points at nothing from becoming reachable.
+  rpc PutCommit(PutCommitRequest) returns (PutCommitResponse);
+
+  // MissingBetween returns the chunk ids a client holding `have` might not hold
+  // at `want`.
+  //
+  // The union of the added sets along the path between two commits. Computed
+  // from plaintext fields alone, so the server decrypts nothing, and answered
+  // in one call, so an incremental fetch does not walk a manifest to find out
+  // what it needs.
+  rpc MissingBetween(MissingBetweenRequest) returns (MissingBetweenResponse);
+
+  // BeginWrite reserves quota before a client uploads anything.
+  //
+  // Enforcing limits at commit time would be too late: the chunks are already
+  // stored, and a commit that never arrives leaves them there. A reservation
+  // fails before a byte is sent, and names which limit it hit.
+  rpc BeginWrite(BeginWriteRequest) returns (BeginWriteResponse);
+
+  // HasChunks returns which of these ids the store does not already hold.
+  //
+  // The first call of every write. Chunks are named by a fingerprint of their
+  // contents, so a chunk the store already has is one this commit does not need
+  // to send — which is what makes a commit cost the change rather than the
+  // whole message.
+  rpc HasChunks(HasChunksRequest) returns (HasChunksResponse);
+
+  // PutChunks stores a batch of chunks. Idempotent: a chunk's name determines
+  // its bytes, so writing one twice is writing it once, and a retry after a
+  // failure of unknown outcome is always safe.
+  //
+  // A batch rather than a client stream. These services are served over Connect
+  // and some clients run in a browser, where client streaming is not something
+  // to depend on. A caller with more chunks than fit in one request sends
+  // several, and the idempotence above means a partly-applied batch costs
+  // nothing to repeat.
+  rpc PutChunks(PutChunksRequest) returns (PutChunksResponse);
+
+  // GetChunks streams chunks back.
+  //
+  // Batched and streaming because the common operation on a store is reading
+  // all of it. A full scan of a five-year vault is about twelve hundred chunks,
+  // and doing that as twelve hundred round trips would make the design
+  // pointless.
+  rpc GetChunks(GetChunksRequest) returns (stream GetChunksResponse);
+
+  // PackHint says which chunks a head reaches, so the server can store them
+  // together and serve a later full read in a few requests.
+  //
+  // A client sends it after reading the whole head. It names a commit and no
+  // ref, because naming a ref would tell the server which branch the client
+  // follows. The server keeps the hint only if the commit is the current head
+  // of some ref, and builds packs from it on its next maintenance pass.
+  rpc PackHint(PackHintRequest) returns (PackHintResponse);
+}
+
+// ListRefsRequest asks for a store's branches.
+message ListRefsRequest {
+  // Which store to read.
+  string store_id = 1;
+}
+
+// ListRefsResponse carries every branch the store holds.
+message ListRefsResponse {
+  // In no particular order. A caller looking for one branch computes its hashed
+  // name and matches, rather than asking the server to search by a name it does
+  // not have.
+  repeated Ref refs = 1;
+}
+
+// WatchRefsRequest asks to be told when a store's branches move.
+message WatchRefsRequest {
+  // Which store to watch.
+  string store_id = 1;
+}
+
+// WatchRefsResponse carries every branch the store holds, as ListRefs would.
+message WatchRefsResponse {
+  // The whole set every time, rather than what changed. A watcher that fell
+  // behind and was sent only the newest message is still correct, so the server
+  // may drop intermediate states instead of buffering them for a slow reader.
+  repeated Ref refs = 1;
+}
+
+// UpdateRefRequest moves, creates or deletes one branch.
+message UpdateRefRequest {
+  // Which store to write.
+  string store_id = 1;
+
+  // The branch, as an HMAC of its name under a key derived from the store's.
+  bytes name = 2;
+
+  // Where the branch should point. Ignored when delete is set.
+  bytes commit = 3;
+
+  // The token from the Ref this writer read. Empty creates the branch and fails
+  // if it already exists.
+  string expected_cas_token = 4;
+
+  // Delete the branch rather than move it. `commit` is ignored.
+  bool delete = 5;
+
+  // Move the branch to a commit that does not descend from where it is.
+  //
+  // Refused without this. A branch that jumps to unrelated history orphans
+  // everything between, and the chunks only that history reached become
+  // collectable — which is data loss that looks like a successful write. The
+  // operations that legitimately do it, truncating history and rolling back,
+  // say so here.
+  bool force = 6;
+}
+
+// UpdateRefResponse reports what happened and where the branch now points.
+message UpdateRefResponse {
+  // False when another writer moved the ref first. Not an error: losing a race
+  // is ordinary, and the caller's answer is to rebuild against the new state
+  // and try again.
+  bool updated = 1;
+
+  // What the ref holds now, whether or not this call changed it. A writer that
+  // lost uses this to rebuild without a second round trip.
+  Ref current = 2;
+}
+
+// GetCommitsRequest walks history backwards from one commit.
+message GetCommitsRequest {
+  // Which store to read.
+  string store_id = 1;
+
+  // Where to start. Usually a branch head.
+  bytes from = 2;
+
+  // Zero means one commit. Walking further is for history, not for reading a
+  // version.
+  uint32 depth = 3;
+}
+
+// GetCommitsResponse carries the walk, nearest first.
+message GetCommitsResponse {
+  // Ordered from `from` outwards. A merge commit's parents both appear, so this
+  // is a breadth-first walk rather than a line.
+  repeated Commit commits = 1;
+}
+
+// PutCommitRequest records a version without making it reachable.
+message PutCommitRequest {
+  // Which store to write.
+  string store_id = 1;
+
+  // The version. Its id is recomputed by the server rather than believed.
+  Commit commit = 2;
+
+  // From BeginWrite. The commit's usage is charged against it and the remainder
+  // released.
+  string reservation = 3;
+}
+
+// PutCommitResponse carries the name the server stored the commit under.
+message PutCommitResponse {
+  // Recomputed from the commit's own record, so a client that named it
+  // something else is told the real name rather than trusted.
+  bytes id = 1;
+}
+
+// MissingBetweenRequest asks what a client is short of.
+message MissingBetweenRequest {
+  // Which store to read.
+  string store_id = 1;
+
+  // Commits the client already has, if any. Empty asks for everything `want`
+  // needs.
+  repeated bytes have = 2;
+
+  // The commit the client is trying to reach.
+  bytes want = 3;
+}
+
+// MissingBetweenResponse carries the chunk ids a client may be short of.
+message MissingBetweenResponse {
+  // A superset: it names everything added along the way, including chunks the
+  // client may already hold for other reasons. The client subtracts its own
+  // cache, which is exact because a chunk's name is a fingerprint.
+  repeated bytes chunk_ids = 1;
+
+  // True when `have` is not an ancestor of `want`, so no delta could be
+  // computed and these are every chunk `want` needs. A client that has fallen
+  // far behind, or is following a different branch, gets a full answer rather
+  // than a wrong one.
+  bool full = 2;
+}
+
+// BeginWriteRequest reserves room before anything is uploaded.
+message BeginWriteRequest {
+  // Which store to write.
+  string store_id = 1;
+
+  // How many chunks the client intends to upload, after asking HasChunks. An
+  // estimate, and the ceiling on what it may actually send.
+  uint32 estimated_chunks = 2;
+
+  // How many sealed bytes, not plaintext bytes. The envelope is charged too,
+  // so a reservation computed from plaintext sizes runs out.
+  uint64 estimated_bytes = 3;
+}
+
+// BeginWriteResponse carries the reservation to spend.
+message BeginWriteResponse {
+  // Passed to PutChunks and PutCommit. Opaque.
+  string reservation = 1;
+
+  // When an abandoned reservation is released and its chunks become eligible
+  // for collection.
+  int64 expires_unix = 2;
+}
+
+// HasChunksRequest asks which chunks are new.
+message HasChunksRequest {
+  // Which store to read.
+  string store_id = 1;
+
+  // The chunk names this commit would reference.
+  repeated bytes chunk_ids = 2;
+}
+
+// HasChunksResponse carries the ones that are new.
+message HasChunksResponse {
+  // Only the ones the store does not hold. Returning the absent set rather than
+  // the present set keeps the common answer — a small change to a large store —
+  // small.
+  repeated bytes missing = 1;
+}
+
+// PutChunksRequest uploads a batch.
+message PutChunksRequest {
+  // Which store to write.
+  string store_id = 1;
+
+  // From BeginWrite. Uploading without a live one is refused.
+  string reservation = 2;
+
+  // The batch. Order does not matter and duplicates cost nothing.
+  repeated SealedChunk chunks = 3;
+}
+
+// SealedChunk is one chunk on its way to the server.
+message SealedChunk {
+  // The chunk's name, a fingerprint of its contents under a key the server does
+  // not have.
+  bytes chunk_id = 1;
+
+  // The sealed envelope. The server verifies its length against the reservation
+  // and stores it without looking inside.
+  bytes sealed = 2;
+}
+
+// PutChunksResponse reports what the batch did.
+message PutChunksResponse {
+  // How many were new.
+  uint32 stored = 1;
+
+  // How many the store already held, and therefore did not charge for. A client
+  // seeing a high number here is deduplicating well.
+  uint32 already_present = 2;
+}
+
+// GetChunksRequest fetches chunks by name.
+message GetChunksRequest {
+  // Which store to read.
+  string store_id = 1;
+
+  // The names to fetch. A missing one is an error rather than an omission: a
+  // commit that references it says the store should have it, so its absence
+  // means the store is damaged.
+  repeated bytes chunk_ids = 2;
+}
+
+// GetChunksResponse carries one chunk per message on the stream.
+message GetChunksResponse {
+  // Which chunk this is. The client checks it against what it asked for, and
+  // the seal is bound to this name, so a substitution fails to open.
+  bytes chunk_id = 1;
+
+  // The sealed envelope, exactly as it was stored.
+  bytes sealed = 2;
+}
+
+// PackHintRequest names a head and the chunks it reaches.
+message PackHintRequest {
+  // Which store.
+  string store_id = 1;
+
+  // The commit the client read.
+  bytes commit = 2;
+
+  // Every chunk the commit reaches, each manifest node before its children and
+  // children in key order. At most 100,000.
+  repeated bytes chunk_ids = 3;
+}
+
+// PackHintResponse says whether the hint was kept.
+message PackHintResponse {
+  // False when the commit is no longer the head of any ref, which is ordinary:
+  // somebody committed after the client read.
+  bool accepted = 1;
+}

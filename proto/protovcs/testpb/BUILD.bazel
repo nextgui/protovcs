@@ -1,0 +1,64 @@
+load("@protobuf//bazel:proto_library.bzl", "proto_library")
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//proto:def.bzl", "go_proto_library")
+load("@stableproto//bazel:defs.bzl", "proto_schema_lock")
+load("//bazel:defs.bzl", "protovcs_layout_go")
+load("//bazel:checked_in.bzl", "checked_in_go")
+
+package(default_visibility = ["//visibility:public"])
+
+proto_library(
+    name = "testpb_proto",
+    srcs = ["testpb.proto"],
+    deps = ["//proto/protovcs/v1:protovcs_proto"],
+)
+
+go_proto_library(
+    name = "testpb_go_proto",
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/testpb",
+    proto = ":testpb_proto",
+    deps = ["//proto/protovcs/v1"],
+)
+
+go_library(
+    name = "testpb",
+    embed = [":testpb_go_proto"],
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/testpb",
+)
+
+# Proves the build rule end to end: this layout is compiled at build time, and a
+# layout that named a field which does not exist would fail here rather than on
+# a first write.
+# The test message is stored, so it is locked like any other stored message.
+# The layout rule below refuses to generate without this.
+proto_schema_lock(
+    name = "testpb_lock",
+    package = "nextgui.protovcs.testpb",
+    proto = ":testpb_proto",
+)
+
+protovcs_layout_go(
+    name = "teststorelayout",
+    src = "teststore.layout.textproto",
+    go_package = "teststorelayout",
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/testpb/teststorelayout",
+    locks = ["testpb.lock"],
+    protos = [":testpb_proto"],
+    # The generated code names the message's own Go type, so the library of that
+    # type is a dependency of the library generated from it.
+    deps = [":testpb"],
+)
+
+# For `go test ./...` without Bazel.
+checked_in_go(
+    name = "write_go",
+    src = ":testpb_go_proto",
+    files = {"testpb.pb.go": "testpb.pb.go"},
+    output_group = "go_generated_srcs",
+)
+
+checked_in_go(
+    name = "write_layout_go",
+    src = ":teststorelayout_gen",
+    files = {"teststorelayout/teststorelayout.pb.layout.go": "teststorelayout_gen.pb.layout.go"},
+)

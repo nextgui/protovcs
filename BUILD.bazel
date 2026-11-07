@@ -1,0 +1,84 @@
+load("@rules_go//go:def.bzl", "go_library")
+load("@rules_go//go:def.bzl", "go_test")
+
+package(default_visibility = ["//visibility:public"])
+
+go_library(
+    name = "protovcs",
+    srcs = [
+        "canonical.go",
+        "chunkcache.go",
+        "digest.go",
+        "headmarks.go",
+        "layout.go",
+        "manifest.go",
+        "materialize.go",
+        "memo.go",
+        "partial.go",
+        "probe.go",
+        "rewrite.go",
+        "seal.go",
+        "store.go",
+        "transport.go",
+        "types.go",
+        "version.go",
+    ],
+    importpath = "github.com/nextgui/protovcs",
+    deps = [
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protodesc",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+        "@org_golang_google_protobuf//reflect/protoregistry",
+        "@org_golang_google_protobuf//types/descriptorpb",
+        "@org_golang_google_protobuf//types/dynamicpb",
+        "@org_golang_google_protobuf//types/known/timestamppb",
+    ],
+)
+
+go_test(
+    name = "protovcs_test",
+    size = "small",
+    srcs = [
+        "canonical_test.go",
+        "chunkcache_test.go",
+        "complexity_test.go",
+        "packhint_test.go",
+        "crash_test.go",
+        "export_test.go",
+        "fuzz_test.go",
+        "generated_test.go",
+        "headmarks_test.go",
+        "identity_test.go",
+        "incremental_test.go",
+        "itemsize_test.go",
+        "layout_test.go",
+        "log_test.go",
+        "readat_test.go",
+        "rewrite_test.go",
+        "manifest_test.go",
+        "materialize_test.go",
+        "memo_test.go",
+        "nested_test.go",
+        "partial_test.go",
+        "seal_test.go",
+        "soak_test.go",
+        "store_test.go",
+        "version_test.go",
+        "watch_test.go",
+    ],
+    embed = [":protovcs"],
+    deps = [
+        "//memtransport",
+        "//proto/protovcs/testpb",
+        "//proto/protovcs/testpb:teststorelayout",
+        "//proto/protovcs/v1",
+        "@org_golang_google_protobuf//encoding/protowire",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//reflect/protoreflect",
+    ],
+)
+
+
+exports_files(["go.mod"])
