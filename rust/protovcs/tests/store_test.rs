@@ -797,3 +797,74 @@ async fn partial_put_allows_replacing_a_cleared_item_with_a_parent_or_child_key(
     .unwrap();
     part.commit(&meta("collapse alpha")).await.unwrap();
 }
+
+#[tokio::test]
+async fn log_missing_parent_returns_no_such_commit() {
+    let server = MemServer::new();
+    let s = store(&server);
+    let main = s.branch("main");
+    let c1 = main.write(&meta("c1"), &store_message(1)).await.unwrap();
+    let _c2 = main.write(&meta("c2"), &store_message(2)).await.unwrap();
+
+    server.drop_commit(&c1);
+    let fresh_store = store(&server);
+    let err = fresh_store
+        .branch("main")
+        .log(&Default::default())
+        .await
+        .unwrap_err();
+    assert!(
+        err.is(ErrorKind::NoSuchCommit),
+        "expected NoSuchCommit, got {err:?}"
+    );
+}
+
+#[tokio::test]
+async fn rewrite_backs_off_on_lost_race() {
+    let server = MemServer::new();
+    let slept = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let slept_clone = Arc::clone(&slept);
+    let s = Store::builder()
+        .transport(server.transport())
+        .sealer(Arc::new(Keyring::new(&root_key()).unwrap()))
+        .layout(teststore())
+        .sleep(Arc::new(move |_| {
+            slept_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async {})
+        }))
+        .build()
+        .unwrap();
+
+    s.branch("main")
+        .write(&meta("first"), &store_message(1))
+        .await
+        .unwrap();
+
+    let writer = store(&server);
+    let mut race_injected = false;
+    let res = s
+        .rewrite(|m| {
+            if !race_injected {
+                race_injected = true;
+                let writer = writer.clone();
+                std::thread::spawn(move || {
+                    tokio::runtime::Runtime::new().unwrap().block_on(async {
+                        writer
+                            .branch("main")
+                            .write(&meta("interfering"), &store_message(2))
+                            .await
+                            .unwrap();
+                    })
+                })
+                .join()
+                .unwrap();
+            }
+            set(m, "revision", Value::I64(99));
+            Ok(())
+        })
+        .await
+        .unwrap();
+
+    assert!(res.branches_moved() >= 1);
+    assert_eq!(slept.load(std::sync::atomic::Ordering::SeqCst), 1);
+}

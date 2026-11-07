@@ -174,6 +174,11 @@ impl MemServer {
         self.lock().commits.get(id).cloned()
     }
 
+    /// Removes a stored commit, as garbage collection or data loss would.
+    pub fn drop_commit(&self, id: &CommitId) {
+        self.lock().commits.remove(id);
+    }
+
     /// Chunks fetched, chunks uploaded, and chunk calls made.
     pub fn counts(&self) -> (usize, usize, usize) {
         let st = self.lock();

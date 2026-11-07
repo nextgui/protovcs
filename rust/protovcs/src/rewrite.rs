@@ -50,7 +50,10 @@ impl Store {
         let mut last_err = None;
         // Loaded first, so the marks it holds follow the rewrite too.
         self.load_marks().await?;
-        for _ in 0..DEFAULT_MAX_ATTEMPTS {
+        for attempt in 0..DEFAULT_MAX_ATTEMPTS {
+            if attempt > 0 {
+                self.backoff(attempt).await;
+            }
             let refs = self.transport().list_refs().await?;
             let heads: Vec<CommitId> = refs.iter().map(|r| r.commit).collect();
             for commit in self.history_of(&heads, &mapped).await? {
