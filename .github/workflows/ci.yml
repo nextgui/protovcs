@@ -56,3 +56,39 @@ jobs:
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: idbcache in Chrome
         run: GOOS=js GOARCH=wasm go test -exec "$(go env GOPATH)/bin/wasmbrowsertest" ./idbcache/
+
+  # The Rust client in rust/, built with Cargo. Its tests reproduce the golden
+  # vectors in testdata/golden/, which the go and bazel jobs keep current.
+  rust:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: rust
+    steps:
+      - uses: actions/checkout@v4
+      # Pinned so a new clippy lint does not fail a change that did not cause it.
+      - name: Install Rust
+        run: |
+          rustup toolchain install 1.99.1 --profile minimal \
+            --component clippy,rustfmt --target wasm32-unknown-unknown
+          rustup override set 1.99.1
+      - name: Restore the Cargo cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            rust/target
+          key: cargo-${{ runner.os }}-${{ hashFiles('rust/Cargo.lock') }}
+          restore-keys: cargo-${{ runner.os }}-
+      - name: rustfmt
+        run: cargo fmt --all --check
+      - name: clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+      - name: clippy for wasm32
+        run: cargo clippy --locked --workspace --target wasm32-unknown-unknown --all-features -- -D warnings
+      - name: cargo test
+        run: cargo test --locked --workspace
+      # The crates a browser loads. idbcache is empty on any other target.
+      - name: build for wasm32
+        run: cargo build --locked --target wasm32-unknown-unknown -p protovcs -p protovcs-idbcache --features protovcs/fetch
