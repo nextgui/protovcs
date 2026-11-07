@@ -228,9 +228,6 @@ func (s *Store) rewriteCommit(ctx context.Context, commit *pb.Commit, mapped map
 	if err != nil {
 		return CommitID{}, err
 	}
-	if len(nodes) == 0 {
-		return CommitID{}, fmt.Errorf("protovcs: the rewrite left a version with no items")
-	}
 	for _, n := range nodes {
 		pending[n.ID] = n.Canonical
 	}

@@ -1,6 +1,7 @@
 package protovcs
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -316,5 +317,75 @@ func TestADateWithNoMonthIsRefused(t *testing.T) {
 	c := compiledTestLayout(t)
 	if _, err := c.ItemKeyFor("records", &testpb.Record{Group: "alpha"}); err == nil {
 		t.Fatal("a record with no date was given an item key")
+	}
+}
+
+func TestIntSegmentsSortNumerically(t *testing.T) {
+	vals := []int64{math.MinInt64, math.MinInt64 + 1, -1 << 40, -42, -2, -1, 0, 1, 42, math.MaxInt64}
+	for i, v := range vals {
+		if got := IntSegment(v); len(got) != 20 {
+			t.Errorf("IntSegment(%d) = %q, want 20 characters", v, got)
+		}
+		if i > 0 && !(IntSegment(vals[i-1]) < IntSegment(v)) {
+			t.Errorf("IntSegment(%d) = %q sorts at or after IntSegment(%d) = %q",
+				vals[i-1], IntSegment(vals[i-1]), v, IntSegment(v))
+		}
+	}
+	// Non-negative values keep the encoding stores already hold.
+	if got := IntSegment(42); got != "00000000000000000042" {
+		t.Errorf("IntSegment(42) = %q", got)
+	}
+}
+
+func TestADateOutsideFourDigitYearsIsRefused(t *testing.T) {
+	l := base()
+	l.Splits = []*pb.Split{{
+		Field: "records",
+		By:    []*pb.ShardKey{{Field: "date", Transform: pb.Transform_TRANSFORM_YEAR}},
+	}}
+	c, err := CompileLayout(l, (&testpb.Store{}).ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("CompileLayout: %v", err)
+	}
+	for _, year := range []int32{-1, 10000} {
+		rec := &testpb.Record{Id: "x", Group: "g", Date: &testpb.Date{Year: year, Month: 1, Day: 1}}
+		if _, err := c.Materialize(&testpb.Store{Records: []*testpb.Record{rec}}); err == nil ||
+			!strings.Contains(err.Error(), "0 to 9999") {
+			t.Errorf("a record in the year %d materialized (err=%v)", year, err)
+		}
+	}
+	rec := &testpb.Record{Id: "x", Group: "g", Date: &testpb.Date{Year: 9999, Month: 12, Day: 31}}
+	if _, err := c.Materialize(&testpb.Store{Records: []*testpb.Record{rec}}); err != nil {
+		t.Errorf("the year 9999 was refused: %v", err)
+	}
+}
+
+func TestHashSegmentNamesTheBucketAWriteChooses(t *testing.T) {
+	l := base()
+	l.Splits = []*pb.Split{
+		{Field: "records", By: []*pb.ShardKey{{Field: "amount", Transform: pb.Transform_TRANSFORM_HASH, Buckets: 12}}},
+		{Field: "accounts", By: []*pb.ShardKey{{Field: "id", Transform: pb.Transform_TRANSFORM_HASH, Buckets: 3}}},
+	}
+	c, err := CompileLayout(l, (&testpb.Store{}).ProtoReflect().Descriptor())
+	if err != nil {
+		t.Fatalf("CompileLayout: %v", err)
+	}
+	for _, v := range []int64{-5, 0, 7, 1 << 50} {
+		got, err := c.ItemKeyFor("records", &testpb.Record{Amount: v})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := ItemKey("records/" + HashSegment(IntSegment(v), 12)); got != want {
+			t.Errorf("amount %d is in %q, HashSegment names %q", v, got, want)
+		}
+	}
+	for _, id := range []string{"", "a", "b/c"} {
+		got, err := c.ItemKeyFor("accounts", &testpb.Account{Id: id})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := ItemKey("accounts/" + HashSegment(StringSegment(id), 3)); got != want {
+			t.Errorf("id %q is in %q, HashSegment names %q", id, got, want)
+		}
 	}
 }

@@ -181,13 +181,23 @@ func appendMap(b []byte, fd protoreflect.FieldDescriptor, m protoreflect.Map) ([
 
 func appendSingular(b []byte, fd protoreflect.FieldDescriptor, v protoreflect.Value) ([]byte, error) {
 	switch fd.Kind() {
-	case protoreflect.MessageKind, protoreflect.GroupKind:
+	case protoreflect.MessageKind:
 		nested, err := appendMessage(nil, v.Message())
 		if err != nil {
 			return nil, err
 		}
 		b = protowire.AppendTag(b, fd.Number(), protowire.BytesType)
 		return protowire.AppendBytes(b, nested), nil
+
+	case protoreflect.GroupKind:
+		// A group (proto2 group, or an editions DELIMITED field) is framed by a
+		// start and an end tag rather than by a length.
+		b = protowire.AppendTag(b, fd.Number(), protowire.StartGroupType)
+		var err error
+		if b, err = appendMessage(b, v.Message()); err != nil {
+			return nil, err
+		}
+		return protowire.AppendTag(b, fd.Number(), protowire.EndGroupType), nil
 
 	case protoreflect.StringKind:
 		b = protowire.AppendTag(b, fd.Number(), protowire.BytesType)

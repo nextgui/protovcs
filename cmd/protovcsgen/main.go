@@ -569,7 +569,7 @@ func emitScopeConstructor(b *strings.Builder, elem protoreflect.MessageDescripto
 			// value and the bucket is computed the same way a write computes it.
 			goType, conv := goScalar(fd)
 			params = append(params, arg+" "+goType)
-			segments = append(segments, fmt.Sprintf("protovcs.HashSegment(%s, %d)", conv(arg), by.GetBuckets()))
+			segments = append(segments, fmt.Sprintf("protovcs.HashSegment(%s, %d)", segmentCall(fd, conv(arg)), by.GetBuckets()))
 			doc = append(doc, by.GetField())
 		default:
 			goType, conv := goScalar(fd)
@@ -621,7 +621,7 @@ func goScalar(fd protoreflect.FieldDescriptor) (string, func(string) string) {
 
 func segmentCall(fd protoreflect.FieldDescriptor, arg string) string {
 	switch fd.Kind() {
-	case protoreflect.StringKind:
+	case protoreflect.StringKind, protoreflect.BytesKind:
 		return "protovcs.StringSegment(" + arg + ")"
 	case protoreflect.BoolKind:
 		return "protovcs.BoolSegment(" + arg + ")"

@@ -1252,7 +1252,9 @@ impl Branch {
                 let now = refs.into_iter().find(|r| r.name == ref_name);
                 match now {
                     None => {
-                        if last.is_none() {
+                        // Reported once: a branch already reported deleted has
+                        // not moved again just because some other branch did.
+                        if last.as_ref().is_none_or(|l| l.commit.is_zero()) {
                             return Ok(());
                         }
                         let gone = RefState {
@@ -1379,11 +1381,10 @@ impl Branch {
         for n in &nodes {
             pending.insert(n.id, n.canonical.clone());
         }
-        let Some(root) = nodes.last().map(|n| n.id) else {
-            return Err(Error::invalid(
-                "protovcs: a version with no items cannot be published",
-            ));
-        };
+        let root = nodes
+            .last()
+            .map(|n| n.id)
+            .expect("build_manifest always returns the root node");
         self.publish_built(meta, parents, state, &nodes, root, pending, mode)
             .await
     }

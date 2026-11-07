@@ -7,6 +7,7 @@ import (
 	protovcs "github.com/nextgui/protovcs"
 	"github.com/nextgui/protovcs/memtransport"
 	testpb "github.com/nextgui/protovcs/proto/protovcs/testpb"
+	hashed "github.com/nextgui/protovcs/proto/protovcs/testpb/hashedlayout"
 	gen "github.com/nextgui/protovcs/proto/protovcs/testpb/teststorelayout"
 )
 
@@ -215,5 +216,75 @@ func TestAScopeReadsAnUnsplitField(t *testing.T) {
 	}
 	if len(view.Records()) != 30 {
 		t.Fatalf("the scope read %d records, want 30", len(view.Records()))
+	}
+}
+
+func TestAGeneratedScopeForOneGroupExcludesGroupsItPrefixes(t *testing.T) {
+	ctx := context.Background()
+	s, err := gen.Open(protovcs.NewBuilder().WithTransport(memtransport.New()).WithSealer(keyring(t)))
+	if err != nil {
+		t.Fatalf("gen.Open: %v", err)
+	}
+	d := &testpb.Date{Year: 2026, Month: 1, Day: 1}
+	if _, err := s.Branch("main").Write(ctx, genMeta("seed"), &testpb.Store{Records: []*testpb.Record{
+		{Id: "1", Group: "al", Date: d}, {Id: "2", Group: "alpha", Date: d}, {Id: "3", Group: "al-x", Date: d},
+	}}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	view, err := s.Branch("main").CheckoutRecords(ctx, gen.RecordsByGroup("al"))
+	if err != nil {
+		t.Fatalf("CheckoutRecords: %v", err)
+	}
+	got := view.All()
+	if len(got) != 1 || got[0].GetGroup() != "al" {
+		t.Fatalf("RecordsByGroup(\"al\") returned %v, want the one record in group al", got)
+	}
+}
+
+// A layout with a hashed shard key generates constructors that hash the value
+// as a write does, so the scope for one value holds exactly its elements.
+func TestAGeneratedHashedScopeFetchesItsValue(t *testing.T) {
+	ctx := context.Background()
+	s, err := hashed.Open(protovcs.NewBuilder().WithTransport(memtransport.New()).WithSealer(keyring(t)))
+	if err != nil {
+		t.Fatalf("hashed.Open: %v", err)
+	}
+	if _, err := s.Branch("main").Write(ctx, hashed.Commit("seed", "test", "test@example.com"), &testpb.Store{
+		Records:  records(40),
+		Accounts: []*testpb.Account{{Id: "1", Label: "one"}, {Id: "2", Label: "two"}, {Id: "3", Label: "three"}},
+	}); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	for _, rec := range records(40)[:5] {
+		key, err := hashed.RecordsItemKey(s.Unwrap().Layout(), rec)
+		if err != nil {
+			t.Fatal(err)
+		}
+		scope := hashed.RecordsForDate(rec.GetId(), int(rec.GetDate().GetYear()), int(rec.GetDate().GetMonth()))
+		if !scope.Scope().Holds(key) {
+			t.Fatalf("RecordsForDate(%q, ...) does not hold %q, where a write puts it", rec.GetId(), key)
+		}
+		view, err := s.Branch("main").CheckoutRecords(ctx, hashed.RecordsById(rec.GetId()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		found := false
+		for _, r := range view.All() {
+			found = found || r.GetId() == rec.GetId()
+		}
+		if !found {
+			t.Fatalf("RecordsById(%q) does not return that record", rec.GetId())
+		}
+	}
+	view, err := s.Branch("main").CheckoutAccounts(ctx, hashed.AccountsForLabel("two"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range view.All() {
+		found = found || a.GetLabel() == "two"
+	}
+	if !found {
+		t.Fatal("AccountsForLabel(\"two\") does not return that account")
 	}
 }

@@ -748,15 +748,19 @@ pub(crate) fn shard_value(c: &Compiled, k: &CompiledShardKey, v: Option<&Value>)
                 )));
             };
             let (y, m, d) = date_parts(c, leaf, v)?;
+            // Four digits is what keeps string order chronological, so a year
+            // that needs more, or a sign, has no key that sorts correctly.
+            if !(0..=9999).contains(&y) {
+                return Err(Error::invalid(format!(
+                    "protovcs: {} is in the year {y}, and a date key holds only the years 0 to 9999",
+                    path_string(&k.path)
+                )));
+            }
             Ok(date_segment(k.transform, y, m, d))
         }
         Transform::TRANSFORM_HASH => {
             let raw = v.map(scalar_string).unwrap_or_default();
-            let sum = Sha256::digest(raw.as_bytes());
-            let head = u64::from_be_bytes(sum[..8].try_into().expect("8 bytes"));
-            let bucket = head % u64::from(k.buckets);
-            let width = (k.buckets - 1).to_string().len();
-            Ok(format!("b{bucket:0width$}"))
+            Ok(hash_segment(&raw, k.buckets))
         }
     }
 }
@@ -815,7 +819,9 @@ fn go_pad(v: i64, width: usize) -> String {
     format!("{v:0width$}")
 }
 
-/// Formats one segment of an item key from a date, widest part first.
+/// Formats one segment of an item key from a date, widest part first. The
+/// order is chronological for the years 0 to 9999 only, and a write refuses
+/// a date outside them.
 pub fn date_segment(t: Transform, year: i64, month: i64, day: i64) -> String {
     match t {
         Transform::TRANSFORM_YEAR => go_pad(year, 4),
@@ -830,14 +836,29 @@ pub fn string_segment(v: &str) -> String {
     escape_segment(v.as_bytes())
 }
 
-/// Formats a signed integer so that string order matches numeric order.
+/// Formats a signed integer in twenty characters, so that string order
+/// matches numeric order. A non-negative value is "0" and then the value in
+/// 19 digits. A negative value is "-" and then `v + 2^63` in 19 digits: "-"
+/// sorts below "0", and adding 2^63 maps `i64::MIN..=-1` onto `0..2^63` in
+/// the same order.
 pub fn int_segment(v: i64) -> String {
     if v < 0 {
-        // wrapping_neg matches Go for the one value that has no negation.
-        format!("-{:019}", v.wrapping_neg())
+        format!("-{:019}", (v as u64).wrapping_add(1 << 63))
     } else {
         format!("0{v:019}")
     }
+}
+
+/// Formats the bucket a value hashes into as one segment. `value` is the
+/// value's own segment form, as [`string_segment`], [`int_segment`],
+/// [`uint_segment`] or [`bool_segment`] render it, and empty for a field that
+/// is not set.
+pub fn hash_segment(value: &str, buckets: u32) -> String {
+    let sum = Sha256::digest(value.as_bytes());
+    let head = u64::from_be_bytes(sum[..8].try_into().expect("8 bytes"));
+    let bucket = head % u64::from(buckets);
+    let width = (buckets - 1).to_string().len();
+    format!("b{bucket:0width$}")
 }
 
 /// Formats an unsigned integer as one segment.

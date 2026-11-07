@@ -17,7 +17,10 @@ use buffa_descriptor::reflect::{MapKey, MapKeyRef, ReflectMessage, ValueRef};
 use buffa_descriptor::{DynamicMessage, FieldDescriptor, FieldKind, ScalarType, SingularKind};
 
 use crate::error::{Error, Result};
-use crate::wire::{BYTES, FIXED32, FIXED64, VARINT, put_bytes, put_tag, put_uvarint, zigzag};
+use crate::wire::{
+    BYTES, END_GROUP, FIXED32, FIXED64, START_GROUP, VARINT, put_bytes, put_tag, put_uvarint,
+    zigzag,
+};
 
 /// Returns the canonical encoding of a message.
 ///
@@ -72,7 +75,7 @@ fn append_field(out: &mut Vec<u8>, fd: &FieldDescriptor, v: ValueRef<'_>) -> Res
                 }
                 let mut entry = Vec::new();
                 append_map_key(&mut entry, key, k);
-                match append_singular(&mut entry, 2, value, v) {
+                match append_singular(&mut entry, 2, value, false, v) {
                     Ok(()) => entries.push((k.to_owned(), entry)),
                     Err(e) => err = Some(e),
                 }
@@ -106,7 +109,7 @@ fn append_field(out: &mut Vec<u8>, fd: &FieldDescriptor, v: ValueRef<'_>) -> Res
             } else {
                 list.for_each(&mut |v| {
                     if err.is_none()
-                        && let Err(e) = append_singular(out, number, kind, v)
+                        && let Err(e) = append_singular(out, number, kind, fd.is_delimited(), v)
                     {
                         err = Some(e);
                     }
@@ -114,7 +117,7 @@ fn append_field(out: &mut Vec<u8>, fd: &FieldDescriptor, v: ValueRef<'_>) -> Res
             }
             err.map_or(Ok(()), Err)
         }
-        (FieldKind::Singular(kind), v) => append_singular(out, number, kind, v),
+        (FieldKind::Singular(kind), v) => append_singular(out, number, kind, fd.is_delimited(), v),
         (kind, v) => Err(mismatch(kind, &v)),
     }
 }
@@ -129,18 +132,25 @@ fn append_map_key(out: &mut Vec<u8>, key: ScalarType, k: MapKeyRef<'_>) {
         MapKeyRef::String(s) => ValueRef::String(s),
     };
     // A map key's kind always matches its value, so this cannot fail.
-    let _ = append_singular(out, 1, SingularKind::Scalar(key), v);
+    let _ = append_singular(out, 1, SingularKind::Scalar(key), false, v);
 }
 
 fn append_singular(
     out: &mut Vec<u8>,
     number: u32,
     kind: SingularKind,
+    delimited: bool,
     v: ValueRef<'_>,
 ) -> Result<()> {
     match (kind, v) {
-        // A group is written as a length-delimited message, as the Go client
-        // does.
+        // A group (proto2 group, or an editions DELIMITED field) is framed by
+        // a start and an end tag rather than by a length.
+        (SingularKind::Message(_), ValueRef::Message(m)) if delimited => {
+            put_tag(out, number, START_GROUP);
+            append_message(out, &*m)?;
+            put_tag(out, number, END_GROUP);
+            Ok(())
+        }
         (SingularKind::Message(_), ValueRef::Message(m)) => {
             let mut nested = Vec::new();
             append_message(&mut nested, &*m)?;

@@ -583,3 +583,166 @@ async fn a_write_is_recorded() {
         .unwrap_err();
     assert!(err.is(ErrorKind::WentBackwards), "{err}");
 }
+
+fn record_in(id: &str, group: &str, year: i32) -> DynamicMessage {
+    let mut r = record(0);
+    set(&mut r, "id", Value::String(id.into()));
+    set(&mut r, "group", Value::String(group.into()));
+    let mut date = new("nextgui.protovcs.testpb.Date");
+    set(&mut date, "year", Value::I32(year));
+    set(&mut date, "month", Value::I32(1));
+    set(&mut date, "day", Value::I32(1));
+    set(&mut r, "date", Value::Message(date));
+    r
+}
+
+fn with_lists(records: Vec<DynamicMessage>, accounts: Vec<DynamicMessage>) -> DynamicMessage {
+    let mut m = new(STORE);
+    set(
+        &mut m,
+        "records",
+        Value::List(records.into_iter().map(Value::Message).collect()),
+    );
+    set(
+        &mut m,
+        "accounts",
+        Value::List(accounts.into_iter().map(Value::Message).collect()),
+    );
+    m
+}
+
+#[tokio::test]
+async fn a_field_scope_holds_keys_outside_the_basic_multilingual_plane() {
+    let s = store(&MemServer::new());
+    let accounts = ["plain", "\u{1F600}", "\u{10FFFF}"].map(account).to_vec();
+    s.branch("main")
+        .write(&meta("w"), &with_lists(Vec::new(), accounts))
+        .await
+        .unwrap();
+    for scope in [Scope::field("accounts"), Scope::everything()] {
+        let p = s.branch("main").checkout(scope.clone()).await.unwrap();
+        assert_eq!(p.items().count(), 3, "{scope}");
+        assert!(p.get("accounts/\u{1F600}").unwrap().is_some(), "{scope}");
+    }
+}
+
+#[tokio::test]
+async fn a_prefix_scope_covers_whole_segments_only() {
+    let s = store(&MemServer::new());
+    let records = ["al", "al-x", "alpha", "al/x"]
+        .map(|g| record_in(g, g, 2026))
+        .to_vec();
+    s.branch("main")
+        .write(&meta("w"), &with_lists(records, Vec::new()))
+        .await
+        .unwrap();
+    let p = s
+        .branch("main")
+        .checkout(Scope::prefix("records/al"))
+        .await
+        .unwrap();
+    let keys: Vec<&str> = p.items().map(|i| i.key.as_str()).collect();
+    assert_eq!(keys, ["records/al/2026/01"]);
+    assert!(!p.scope().holds("records/alpha/2026/01"));
+    assert!(!p.scope().holds("records/al-x/2026/01"));
+    assert!(p.scope().holds("records/al"));
+}
+
+#[tokio::test]
+async fn put_refuses_a_directory_key_or_a_key_below_an_item() {
+    let s = store(&MemServer::new());
+    let main = s.branch("main");
+    main.write(&meta("seed"), &store_message(30)).await.unwrap();
+    for key in ["records/alpha", "records/alpha/2026/01/x"] {
+        let mut p = main.checkout(Scope::nothing()).await.unwrap();
+        if p.put(protovcs::Item::new(key, new(STORE))).is_err() {
+            continue;
+        }
+        assert!(
+            p.commit(&meta("p")).await.is_err(),
+            "a put at {key:?} was committed"
+        );
+    }
+    let mut p = main.checkout(Scope::prefix("records/alpha")).await.unwrap();
+    assert!(
+        p.put(protovcs::Item::new("records/alpha", new(STORE)))
+            .is_err()
+    );
+    assert_eq!(list_len(&main.read().await.unwrap(), "records"), 30);
+}
+
+#[tokio::test]
+async fn a_date_outside_four_digit_years_is_refused() {
+    let s = store(&MemServer::new());
+    for year in [-1, 10000] {
+        let err = s
+            .branch("main")
+            .write(
+                &meta("w"),
+                &with_lists(vec![record_in("x", "g", year)], Vec::new()),
+            )
+            .await
+            .unwrap_err();
+        assert!(err.to_string().contains("0 to 9999"), "{year}: {err}");
+    }
+}
+
+#[test]
+fn int_segments_sort_numerically() {
+    let vals = [i64::MIN, i64::MIN + 1, -42, -2, -1, 0, 1, 42, i64::MAX];
+    for w in vals.windows(2) {
+        let (a, b) = (protovcs::int_segment(w[0]), protovcs::int_segment(w[1]));
+        assert_eq!(a.len(), 20);
+        assert!(a < b, "{a} sorts at or after {b}");
+    }
+    assert_eq!(protovcs::int_segment(42), "00000000000000000042");
+}
+
+#[tokio::test]
+async fn a_deletion_is_reported_once_while_other_branches_move() {
+    let server = MemServer::new();
+    let s = store(&server);
+    let main = s.branch("main");
+    main.write(&meta("first"), &store_message(1)).await.unwrap();
+
+    let (tx, mut rx) = futures::channel::mpsc::unbounded();
+    let mut calls = 0;
+    let watch = main.watch(move |state| {
+        calls += 1;
+        tx.unbounded_send(state).unwrap();
+        if calls == 3 {
+            return Err(protovcs::Error::invalid("stop"));
+        }
+        Ok(())
+    });
+    let drive = async {
+        use futures::StreamExt;
+        let first = rx.next().await.unwrap();
+        server
+            .transport()
+            .update_ref(
+                &first.name,
+                CommitId::default(),
+                &first.cas_token,
+                protovcs::RefMove::FastForward,
+            )
+            .await
+            .unwrap();
+        assert!(rx.next().await.unwrap().commit.is_zero(), "the deletion");
+        s.branch("other")
+            .write(&meta("other"), &store_message(1))
+            .await
+            .unwrap();
+        // Time for the watch to see the other branch move on its own, before
+        // main is written again.
+        futures_timer::Delay::new(std::time::Duration::from_millis(100)).await;
+        main.write(&meta("again"), &store_message(2)).await.unwrap();
+        let third = rx.next().await.unwrap();
+        assert!(
+            !third.commit.is_zero(),
+            "the deletion was reported again when another branch moved"
+        );
+    };
+    let (err, ()) = futures::join!(watch, drive);
+    assert_eq!(err.unwrap_err().to_string(), "stop");
+}

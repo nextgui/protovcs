@@ -52,6 +52,18 @@ protovcs_layout_go(
     deps = [":testpb"],
 )
 
+# The same message under a layout with hashed shard keys, so the generated
+# constructors for a HASH split are compiled.
+protovcs_layout_go(
+    name = "hashedlayout",
+    src = "hashed.layout.textproto",
+    go_package = "hashedlayout",
+    importpath = "github.com/nextgui/protovcs/proto/protovcs/testpb/hashedlayout",
+    locks = ["testpb.lock"],
+    protos = [":testpb_proto"],
+    deps = [":testpb"],
+)
+
 # For `go test ./...` without Bazel.
 checked_in_go(
     name = "write_go",
@@ -64,4 +76,10 @@ checked_in_go(
     name = "write_layout_go",
     src = ":teststorelayout_gen",
     files = {"teststorelayout/teststorelayout.pb.layout.go": "teststorelayout_gen.pb.layout.go"},
+)
+
+checked_in_go(
+    name = "write_hashed_layout_go",
+    src = ":hashedlayout_gen",
+    files = {"hashedlayout/hashedlayout.pb.layout.go": "hashedlayout_gen.pb.layout.go"},
 )

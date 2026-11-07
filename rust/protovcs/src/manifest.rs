@@ -9,7 +9,7 @@ use crate::proto::manifest_node::Entry;
 use crate::proto::manifest_node::entry::Target;
 use crate::reflect::canonical_own;
 use crate::seal::Sealer;
-use crate::types::{ChunkId, ItemKey, Role};
+use crate::types::{ChunkId, ItemKey, ROOT_ITEM_KEY, Role};
 use crate::{BoxFuture, MaybeSend, MaybeSync};
 
 /// One item as the manifest records it: where it is and how big.
@@ -41,8 +41,11 @@ pub struct ManifestChunk {
 /// The point at which a manifest node is refused.
 const MAX_NODE_ENTRIES: usize = 65536;
 
-/// The largest key: every key sorts at or before it.
-pub(crate) const LAST_KEY: &str = "\u{FFFF}";
+/// The upper bound of a range that runs to the end of the key space: U+10FFFF,
+/// the largest Unicode scalar value, whose UTF-8 is F4 8F BF BF. Keys compare
+/// by bytes, so it sorts after every character, including those outside the
+/// Basic Multilingual Plane. The Go client uses the same bound.
+pub(crate) const LAST_KEY: &str = "\u{10FFFF}";
 
 /// Where a reader gets manifest nodes.
 pub trait NodeSource: MaybeSend + MaybeSync {
@@ -532,6 +535,16 @@ pub async fn update_manifest(
         }
         let leaf = segs[segs.len() - 1];
         dirty.insert(prefix.clone());
+        // One entry names one thing, as in build_manifest. Writing or deleting
+        // an item where a directory is, or one this change set is creating,
+        // would replace or drop every item under it.
+        let is_dir = find_entry(&loaded[&prefix], leaf).is_some_and(|e| entry_child(e).is_some())
+            || (key != ROOT_ITEM_KEY && loaded.contains_key(&join(&prefix, leaf)));
+        if is_dir {
+            return Err(Error::invalid(format!(
+                "protovcs: item {key:?} is also a directory holding other items"
+            )));
+        }
         let node = loaded.get_mut(&prefix).expect("loaded above");
         match r {
             None => remove_entry(node, leaf),

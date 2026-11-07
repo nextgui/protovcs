@@ -1,0 +1,19 @@
+# A layout with hashed shard keys, so the generated scope constructors for a
+# HASH split are compiled and tested. Records are split by a hash of their id
+# and then by month; accounts by a hash of their label.
+
+name: "hashed"
+root_message: "nextgui.protovcs.testpb.Store"
+schema_version: 1
+
+splits {
+  field: "records"
+  by { field: "id" transform: TRANSFORM_HASH buckets: 16 }
+  by { field: "date" transform: TRANSFORM_MONTH }
+  order: "id"
+}
+
+splits {
+  field: "accounts"
+  by { field: "label" transform: TRANSFORM_HASH buckets: 3 }
+}

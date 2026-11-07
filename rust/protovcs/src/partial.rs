@@ -42,7 +42,7 @@ impl Scope {
 
     /// The scope covering one split field entirely.
     pub fn field(name: &str) -> Self {
-        Self::between(name, format!("{name}/{LAST_KEY}"))
+        Self::prefix(name)
     }
 
     /// The scope covering the root item alone.
@@ -50,9 +50,28 @@ impl Scope {
         Self::between(ROOT_ITEM_KEY, ROOT_ITEM_KEY)
     }
 
-    /// Every item key beginning with `prefix`.
+    /// The item key `prefix` and every key under `prefix/`.
+    ///
+    /// Whole segments only: `prefix("records/al")` does not cover
+    /// `"records/alpha"`. That takes two ranges, because keys such as
+    /// `"records/al-x"` sort between `"records/al"` and `"records/al/"`. An
+    /// empty prefix covers everything.
     pub fn prefix(prefix: &str) -> Self {
-        Self::between(prefix, format!("{prefix}{LAST_KEY}"))
+        if prefix.is_empty() {
+            return Self::everything();
+        }
+        Self {
+            ranges: vec![
+                KeyRange {
+                    from: prefix.into(),
+                    to: prefix.into(),
+                },
+                KeyRange {
+                    from: format!("{prefix}/"),
+                    to: format!("{prefix}/{LAST_KEY}"),
+                },
+            ],
+        }
     }
 
     /// The item keys between `from` and `to` inclusive.
@@ -263,14 +282,34 @@ impl Partial {
 
     /// Replaces or adds one item. Allowed outside the scope.
     ///
+    /// A key that names a directory of other items, or a key below another
+    /// item, is refused: one manifest entry names one thing. This refuses it
+    /// against the items held, and [`Partial::commit`] against the rest of
+    /// the store.
+    ///
     /// # Errors
     ///
-    /// When the item holds a different message type.
+    /// When the item holds a different message type, or its key is a
+    /// directory of held items or below a held item.
     pub fn put(&mut self, item: Item) -> Result<()> {
         self.branch
             .store
             .layout()
             .check_type(&item.fragment, &item.key)?;
+        for k in self.items.keys() {
+            if k.starts_with(&format!("{}/", item.key)) {
+                return Err(Error::invalid(format!(
+                    "protovcs: item {:?} is also a directory holding other items, such as {k:?}",
+                    item.key
+                )));
+            }
+            if item.key.starts_with(&format!("{k}/")) {
+                return Err(Error::invalid(format!(
+                    "protovcs: item {:?} would be below the item {k:?}",
+                    item.key
+                )));
+            }
+        }
         let key = item.key.clone();
         self.items.insert(key.clone(), item);
         self.scope = Scope::union([&self.scope, &Scope::between(key.clone(), key)]);
@@ -294,7 +333,7 @@ impl Partial {
             .get(&key)
             .cloned()
             .unwrap_or_else(|| Item::new(key.clone(), layout.new_message()));
-        layout.append_element(&mut item.fragment, field, elem)?;
+        layout.put_element(&mut item.fragment, &key, field, elem)?;
         self.put(item)
     }
 

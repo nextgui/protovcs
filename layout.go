@@ -719,6 +719,12 @@ func shardValue(k compiledShardKey, v protoreflect.Value, present bool) (string,
 		if err != nil {
 			return "", err
 		}
+		// Four digits is what keeps string order chronological, so a year
+		// that needs more, or a sign, has no key that sorts correctly.
+		if y < 0 || y > 9999 {
+			return "", fmt.Errorf("protovcs: %s is in the year %d, and a date key holds only the years 0 to 9999",
+				fieldPathString(k.path), y)
+		}
 		// Separated by the path separator rather than by dashes, so the manifest
 		// nests along them. A day written as one segment would put every day of
 		// a store in a single node: five years is 1,825 entries in one chunk,
@@ -735,10 +741,7 @@ func shardValue(k compiledShardKey, v protoreflect.Value, present bool) (string,
 		if present {
 			raw = scalarString(k.path[len(k.path)-1], v)
 		}
-		sum := sha256.Sum256([]byte(raw))
-		bucket := binary.BigEndian.Uint64(sum[:8]) % uint64(k.buckets)
-		width := len(strconv.FormatUint(uint64(k.buckets-1), 10))
-		return fmt.Sprintf("b%0*d", width, bucket), nil
+		return HashSegment(raw, k.buckets), nil
 
 	default:
 		return "", fmt.Errorf("protovcs: transform %v is not implemented", k.transform)
@@ -753,6 +756,8 @@ func shardValue(k compiledShardKey, v protoreflect.Value, present bool) (string,
 //
 // Separated by the path separator rather than by dashes so the manifest nests
 // along them, and widest part first so string order matches chronological order.
+// That holds for the years 0 to 9999 only, and a write refuses a date outside
+// them.
 func DateSegment(t pb.Transform, year, month, day int) string {
 	switch t {
 	case pb.Transform_TRANSFORM_YEAR:
@@ -766,6 +771,19 @@ func DateSegment(t pb.Transform, year, month, day int) string {
 	}
 }
 
+// HashSegment formats the bucket a value hashes into as one segment.
+//
+// value is the value's own segment form, as [StringSegment], [IntSegment],
+// [UintSegment] or [BoolSegment] render it, and empty for a field that is not
+// set. Exported for the same reason as [DateSegment]: generated code names a
+// bucket and must name the one a write chooses.
+func HashSegment(value string, buckets uint32) string {
+	sum := sha256.Sum256([]byte(value))
+	bucket := binary.BigEndian.Uint64(sum[:8]) % uint64(buckets)
+	width := len(strconv.FormatUint(uint64(buckets-1), 10))
+	return fmt.Sprintf("b%0*d", width, bucket)
+}
+
 // StringSegment formats a string value as one segment of an item key.
 //
 // Escaped, because a value containing the separator would otherwise invent a
@@ -774,11 +792,13 @@ func StringSegment(v string) string { return escapeSegment(v) }
 
 // IntSegment formats a signed integer as one segment.
 //
-// Zero-padded and sign-prefixed so that string order matches numeric order,
-// which a plain decimal rendering does not give.
+// Twenty characters, so that string order matches numeric order. A
+// non-negative value is "0" and then the value in 19 digits. A negative value is
+// "-" and then v + 2^63 in 19 digits: "-" sorts below "0", and adding 2^63 maps
+// MinInt64..-1 onto 0..2^63-1 in the same order.
 func IntSegment(v int64) string {
 	if v < 0 {
-		return fmt.Sprintf("-%019d", -v)
+		return fmt.Sprintf("-%019d", uint64(v)+(1<<63))
 	}
 	return fmt.Sprintf("0%019d", v)
 }

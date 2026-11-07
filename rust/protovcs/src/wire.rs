@@ -6,6 +6,10 @@ pub(crate) const VARINT: u32 = 0;
 pub(crate) const FIXED64: u32 = 1;
 /// Wire type of a length-delimited value.
 pub(crate) const BYTES: u32 = 2;
+/// Wire type of the tag that opens a group.
+pub(crate) const START_GROUP: u32 = 3;
+/// Wire type of the tag that closes a group.
+pub(crate) const END_GROUP: u32 = 4;
 /// Wire type of a fixed 32-bit value.
 pub(crate) const FIXED32: u32 = 5;
 

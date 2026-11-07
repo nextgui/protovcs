@@ -308,7 +308,7 @@ func (r *ManifestReader) prefetchLevels(descend func(ItemKey) bool) error {
 
 // All returns every item in the version, in key order.
 func (r *ManifestReader) All() ([]ItemRef, error) {
-	return r.Range("", ItemKey("￿"))
+	return r.Range("", keyMax)
 }
 
 func (r *ManifestReader) walk(prefix string, id ChunkID, depth int,
@@ -614,6 +614,18 @@ func UpdateManifest(s Sealer, oldRoot ChunkID, changes map[ItemKey]*ItemRef,
 		leaf := segs[len(segs)-1]
 		node := loaded[prefix]
 		dirty[prefix] = true
+
+		// One entry names one thing, as in BuildManifest. Writing or deleting
+		// an item where a directory is, or one this change set is creating,
+		// would replace or drop every item under it.
+		if entry := findEntry(node, leaf); entry != nil && entry.GetChild() != nil {
+			return nil, ChunkID{}, fmt.Errorf(
+				"protovcs: item %q is also a directory holding other items", key)
+		}
+		if _, ok := loaded[join(prefix, leaf)]; ok && key != RootItemKey {
+			return nil, ChunkID{}, fmt.Errorf(
+				"protovcs: item %q is also a directory holding other items", key)
+		}
 
 		if ref == nil {
 			removeEntry(node, leaf)
