@@ -276,11 +276,7 @@ func (s *Server) Collect(ctx context.Context, storeID string) (CollectResult, er
 		freed := out.FreedBytes
 		deleted := uint64(out.Deleted)
 		if _, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-			if st.Usage == nil {
-				st.Usage = &pb.Usage{}
-			}
-			st.Usage.Objects = saturatingSub(st.Usage.Objects, deleted)
-			st.Usage.Bytes = saturatingSub(st.Usage.Bytes, freed)
+			accountOf(st, s.now()).deleteChunks(deleted, freed)
 			return nil
 		}); err != nil {
 			return out, err
@@ -540,15 +536,14 @@ func (s *Server) reconcileOnce(ctx context.Context, storeID string) (before, aft
 		if !proto.Equal(st.GetUsage(), before) {
 			return errUsageMoved
 		}
-		if st.Usage == nil {
-			st.Usage = &pb.Usage{}
-		}
-		st.Usage.Objects = uint64(len(chunks))
-		st.Usage.Bytes = bytes
-		st.Usage.Commits = uint64(len(commits))
-		st.Usage.Refs = uint32(len(refs))
-		st.Usage.ReservedObjects = reservedObjects
-		st.Usage.ReservedBytes = reservedBytes
+		accountOf(st, s.now()).recount(&pb.Usage{
+			Objects:         uint64(len(chunks)),
+			Bytes:           bytes,
+			Commits:         uint64(len(commits)),
+			Refs:            uint32(len(refs)),
+			ReservedObjects: reservedObjects,
+			ReservedBytes:   reservedBytes,
+		})
 		return nil
 	})
 	if err != nil {

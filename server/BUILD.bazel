@@ -9,6 +9,7 @@ go_library(
         "collect.go",
         "memstorage.go",
         "pack.go",
+        "quota.go",
         "refwatch.go",
         "server.go",
         "storage.go",
@@ -45,4 +46,13 @@ go_test(
         "//proto/protovcs/v1",
         "@org_golang_google_protobuf//proto",
     ],
+)
+
+# Unit tests of the quota account, which is unexported.
+go_test(
+    name = "quota_test",
+    size = "small",
+    srcs = ["quota_test.go"],
+    embed = [":server"],
+    deps = ["//proto/protovcs/v1"],
 )

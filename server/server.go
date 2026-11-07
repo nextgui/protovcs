@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
-	_ "time/tzdata" // quotaZone must load without the host's zone files
 
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -175,15 +174,7 @@ func (s *Server) BeginWrite(ctx context.Context, storeID string, chunks uint32, 
 	// two writers cannot each be told there is room for the last of it.
 	reserve := func() error {
 		_, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-			if err := checkQuota(st, chunks, bytes, s.now()); err != nil {
-				return err
-			}
-			if st.Usage == nil {
-				st.Usage = &pb.Usage{}
-			}
-			st.Usage.ReservedObjects += uint64(chunks)
-			st.Usage.ReservedBytes += bytes
-			return nil
+			return accountOf(st, s.now()).reserve(chunks, bytes)
 		})
 		return err
 	}
@@ -219,93 +210,6 @@ func (s *Server) BeginWrite(ctx context.Context, storeID string, chunks uint32, 
 		return nil, err
 	}
 	return r, nil
-}
-
-// checkQuota reports whether a store has room for what is about to be written.
-//
-// Reserved amounts count as used. A limit that only counted what had landed
-// would let every concurrent writer be told there was room for the same last
-// megabyte.
-func checkQuota(store *pb.Store, chunks uint32, bytes uint64, now time.Time) error {
-	q, u := store.GetQuota(), store.GetUsage()
-
-	if max := q.GetMaxBytes(); max > 0 {
-		if exceeds(max, addSat(u.GetBytes(), u.GetReservedBytes()), bytes) {
-			return fmt.Errorf("%w: max_bytes is %d, using %d, this write needs %d",
-				ErrQuotaExceeded, max, u.GetBytes()+u.GetReservedBytes(), bytes)
-		}
-	}
-	if max := q.GetMaxObjects(); max > 0 {
-		if exceeds(max, addSat(u.GetObjects(), u.GetReservedObjects()), uint64(chunks)) {
-			return fmt.Errorf("%w: max_objects is %d, holding %d, this write needs %d",
-				ErrQuotaExceeded, max, u.GetObjects()+u.GetReservedObjects(), chunks)
-		}
-	}
-	if max := q.GetMaxBytesPerDay(); max > 0 {
-		today := bytesToday(u, now)
-		if exceeds(max, today, bytes) {
-			return fmt.Errorf("%w: max_bytes_per_day is %d, written %d today, this write needs %d",
-				ErrQuotaExceeded, max, today, bytes)
-		}
-	}
-	return nil
-}
-
-// checkCommitQuota reports whether a store has room for one more commit of
-// size bytes.
-func checkCommitQuota(store *pb.Store, size uint64, now time.Time) error {
-	q, u := store.GetQuota(), store.GetUsage()
-
-	if max := q.GetMaxCommits(); max > 0 && u.GetCommits()+1 > max {
-		return fmt.Errorf("%w: max_commits is %d", ErrQuotaExceeded, max)
-	}
-	if max := q.GetMaxBytes(); max > 0 {
-		if exceeds(max, addSat(u.GetBytes(), u.GetReservedBytes()), size) {
-			return fmt.Errorf("%w: max_bytes is %d, using %d, this commit is %d",
-				ErrQuotaExceeded, max, u.GetBytes()+u.GetReservedBytes(), size)
-		}
-	}
-	if max := q.GetMaxBytesPerDay(); max > 0 {
-		if exceeds(max, bytesToday(u, now), size) {
-			return fmt.Errorf("%w: max_bytes_per_day is %d, written %d today, this commit is %d",
-				ErrQuotaExceeded, max, bytesToday(u, now), size)
-		}
-	}
-	return nil
-}
-
-// quotaZone is the time zone whose midnight starts a new day for
-// max_bytes_per_day.
-var quotaZone = mustLoadLocation("America/Los_Angeles")
-
-func mustLoadLocation(name string) *time.Location {
-	loc, err := time.LoadLocation(name)
-	if err != nil {
-		panic(fmt.Sprintf("protovcs: loading time zone %s: %v", name, err))
-	}
-	return loc
-}
-
-// quotaDay is the calendar day t falls on in quotaZone, as days since
-// 1970-01-01.
-//
-// It counts calendar dates rather than dividing elapsed seconds, because a day
-// in Los Angeles is 23 or 25 hours long when daylight saving starts or ends.
-func quotaDay(t time.Time) int64 {
-	y, m, d := t.In(quotaZone).Date()
-	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC).Unix() / 86400
-}
-
-// bytesToday is what u says was written on now's day in quotaZone. A count
-// recorded for an earlier day is zero today.
-//
-// Nothing resets the counter at midnight. The sweep runs weekly, so the day
-// is checked wherever the counter is read or added to.
-func bytesToday(u *pb.Usage, now time.Time) uint64 {
-	if u.GetBytesTodayDay() != quotaDay(now) {
-		return 0
-	}
-	return u.GetBytesToday()
 }
 
 // HasChunks returns the ids a store does not hold.
@@ -513,14 +417,7 @@ func (s *Server) charge(ctx context.Context, storeID string, stored []protovcs.S
 	}
 	n, bytes := sealedSize(stored)
 	_, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-		if st.Usage == nil {
-			st.Usage = &pb.Usage{}
-		}
-		st.Usage.Objects += uint64(n)
-		st.Usage.Bytes += bytes
-		now := s.now()
-		st.Usage.BytesToday = bytesToday(st.Usage, now) + bytes
-		st.Usage.BytesTodayDay = quotaDay(now)
+		accountOf(st, s.now()).storeChunks(n, bytes)
 		return nil
 	})
 	return err
@@ -547,12 +444,9 @@ func checkReservationID(id string) error {
 // It fails if any chunk is larger than the store's max_chunk_bytes, or if the
 // new chunks would take the reservation past what it covers.
 func (s *Server) chunksToStore(ctx context.Context, storeID string, store *pb.Store, r *Reservation, chunks []protovcs.SealedChunk) ([]protovcs.SealedChunk, error) {
-	if max := store.GetQuota().GetMaxChunkBytes(); max > 0 {
-		for _, c := range chunks {
-			if uint64(len(c.Sealed)) > max {
-				return nil, fmt.Errorf("%w: max_chunk_bytes is %d, chunk %s is %d",
-					ErrQuotaExceeded, max, c.ID, len(c.Sealed))
-			}
+	for _, c := range chunks {
+		if err := checkObjectSize(store.GetQuota(), "chunk "+c.ID.String(), uint64(len(c.Sealed))); err != nil {
+			return nil, err
 		}
 	}
 
@@ -812,22 +706,14 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 	// charge is taken before the record is written so that two commits cannot
 	// both be told there is room, and handed back if the write fails.
 	size := uint64(proto.Size(stored))
-	if max := store.GetQuota().GetMaxChunkBytes(); max > 0 && size > max {
-		return protovcs.CommitID{}, fmt.Errorf("%w: max_chunk_bytes is %d, commit %s is %d",
-			ErrQuotaExceeded, max, id, size)
+	if err := checkObjectSize(store.GetQuota(), "commit "+id.String(), size); err != nil {
+		return protovcs.CommitID{}, err
 	}
 	now := s.now()
 	if _, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-		if err := checkCommitQuota(st, size, now); err != nil {
+		if err := accountOf(st, now).storeCommit(size); err != nil {
 			return err
 		}
-		if st.Usage == nil {
-			st.Usage = &pb.Usage{}
-		}
-		st.Usage.Commits++
-		st.Usage.Bytes += size
-		st.Usage.BytesToday = bytesToday(st.Usage, now) + size
-		st.Usage.BytesTodayDay = quotaDay(now)
 		if v := commit.GetSchemaVersion(); v > st.HeadSchemaVersion {
 			st.HeadSchemaVersion = v
 		}
@@ -837,13 +723,7 @@ func (s *Server) PutCommit(ctx context.Context, storeID, reservationID string, c
 	}
 	if err := s.storage.PutCommit(ctx, storeID, id, stored); err != nil {
 		_, refundErr := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-			st.Usage.Commits = saturatingSub(st.Usage.Commits, 1)
-			st.Usage.Bytes = saturatingSub(st.Usage.Bytes, size)
-			// Only the day it was charged to gets it back. Past midnight the
-			// count has already started again.
-			if st.Usage.BytesTodayDay == quotaDay(now) {
-				st.Usage.BytesToday = saturatingSub(st.Usage.BytesToday, size)
-			}
+			accountOf(st, s.now()).unstoreCommit(size, now)
 			return nil
 		})
 		return protovcs.CommitID{}, errors.Join(err, refundErr)
@@ -869,34 +749,10 @@ func (s *Server) releaseReservation(ctx context.Context, storeID, reservationID 
 		return err
 	}
 	_, err = s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-		if st.Usage == nil {
-			st.Usage = &pb.Usage{}
-		}
-		st.Usage.ReservedObjects = saturatingSub(st.Usage.ReservedObjects, uint64(r.Chunks))
-		st.Usage.ReservedBytes = saturatingSub(st.Usage.ReservedBytes, r.Bytes)
+		accountOf(st, s.now()).release(r)
 		return nil
 	})
 	return err
-}
-
-// exceeds reports whether used plus more is over max, without overflowing.
-func exceeds(max, used, more uint64) bool {
-	return used > max || more > max-used
-}
-
-// addSat adds two counters, saturating rather than wrapping.
-func addSat(a, b uint64) uint64 {
-	if a > ^uint64(0)-b {
-		return ^uint64(0)
-	}
-	return a + b
-}
-
-func saturatingSub(a, b uint64) uint64 {
-	if b > a {
-		return 0
-	}
-	return a - b
 }
 
 // GetCommits walks back from a commit, at most depth records.
@@ -965,9 +821,8 @@ func (s *Server) UpdateRef(ctx context.Context, storeID string, name []byte, com
 		if err != nil {
 			return protovcs.RefState{}, err
 		}
-		if max := store.GetQuota().GetMaxRefs(); max > 0 && uint32(len(refs)) >= max {
-			return protovcs.RefState{}, fmt.Errorf("%w: max_refs is %d and the store has %d",
-				ErrQuotaExceeded, max, len(refs))
+		if err := checkNewRef(store.GetQuota(), len(refs)); err != nil {
+			return protovcs.RefState{}, err
 		}
 	}
 
@@ -1001,10 +856,7 @@ func (s *Server) UpdateRef(ctx context.Context, storeID string, name []byte, com
 		return state, err
 	}
 	if _, err := s.storage.Update(ctx, storeID, func(st *pb.Store) error {
-		if st.Usage == nil {
-			st.Usage = &pb.Usage{}
-		}
-		st.Usage.Refs = uint32(len(refs))
+		accountOf(st, s.now()).setRefs(uint32(len(refs)))
 		return nil
 	}); err != nil {
 		return state, err
