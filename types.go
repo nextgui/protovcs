@@ -80,7 +80,6 @@ const RootItemKey ItemKey = ""
 // know cannot be parsed at all. Canonical rules it does not know can be parsed
 // perfectly and merely produce different names. A schema it does not know parses
 // and names correctly and means something else.
-//
 const (
 	// FormatVersion is the version of the protovcs formats themselves: the
 	// chunk envelope, the manifest node, and the commit record.
