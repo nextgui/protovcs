@@ -50,6 +50,9 @@ const (
 	// StoreAdminServiceDeleteStoreProcedure is the fully-qualified name of the StoreAdminService's
 	// DeleteStore RPC.
 	StoreAdminServiceDeleteStoreProcedure = "/nextgui.protovcs.v1.StoreAdminService/DeleteStore"
+	// StoreAdminServiceRestoreStoreProcedure is the fully-qualified name of the StoreAdminService's
+	// RestoreStore RPC.
+	StoreAdminServiceRestoreStoreProcedure = "/nextgui.protovcs.v1.StoreAdminService/RestoreStore"
 	// StoreAdminServiceTriggerMaintenanceProcedure is the fully-qualified name of the
 	// StoreAdminService's TriggerMaintenance RPC.
 	StoreAdminServiceTriggerMaintenanceProcedure = "/nextgui.protovcs.v1.StoreAdminService/TriggerMaintenance"
@@ -63,6 +66,7 @@ type StoreAdminServiceClient interface {
 	SetQuota(context.Context, *connect.Request[SetQuotaRequest]) (*connect.Response[SetQuotaResponse], error)
 	GetUsage(context.Context, *connect.Request[GetUsageRequest]) (*connect.Response[GetUsageResponse], error)
 	DeleteStore(context.Context, *connect.Request[DeleteStoreRequest]) (*connect.Response[DeleteStoreResponse], error)
+	RestoreStore(context.Context, *connect.Request[RestoreStoreRequest]) (*connect.Response[RestoreStoreResponse], error)
 	TriggerMaintenance(context.Context, *connect.Request[TriggerMaintenanceRequest]) (*connect.Response[TriggerMaintenanceResponse], error)
 }
 
@@ -113,6 +117,12 @@ func NewStoreAdminServiceClient(httpClient connect.HTTPClient, baseURL string, o
 			connect.WithSchema(storeAdminServiceMethods.ByName("DeleteStore")),
 			connect.WithClientOptions(opts...),
 		),
+		restoreStore: connect.NewClient[RestoreStoreRequest, RestoreStoreResponse](
+			httpClient,
+			baseURL+StoreAdminServiceRestoreStoreProcedure,
+			connect.WithSchema(storeAdminServiceMethods.ByName("RestoreStore")),
+			connect.WithClientOptions(opts...),
+		),
 		triggerMaintenance: connect.NewClient[TriggerMaintenanceRequest, TriggerMaintenanceResponse](
 			httpClient,
 			baseURL+StoreAdminServiceTriggerMaintenanceProcedure,
@@ -130,6 +140,7 @@ type storeAdminServiceClient struct {
 	setQuota           *connect.Client[SetQuotaRequest, SetQuotaResponse]
 	getUsage           *connect.Client[GetUsageRequest, GetUsageResponse]
 	deleteStore        *connect.Client[DeleteStoreRequest, DeleteStoreResponse]
+	restoreStore       *connect.Client[RestoreStoreRequest, RestoreStoreResponse]
 	triggerMaintenance *connect.Client[TriggerMaintenanceRequest, TriggerMaintenanceResponse]
 }
 
@@ -163,6 +174,11 @@ func (c *storeAdminServiceClient) DeleteStore(ctx context.Context, req *connect.
 	return c.deleteStore.CallUnary(ctx, req)
 }
 
+// RestoreStore calls nextgui.protovcs.v1.StoreAdminService.RestoreStore.
+func (c *storeAdminServiceClient) RestoreStore(ctx context.Context, req *connect.Request[RestoreStoreRequest]) (*connect.Response[RestoreStoreResponse], error) {
+	return c.restoreStore.CallUnary(ctx, req)
+}
+
 // TriggerMaintenance calls nextgui.protovcs.v1.StoreAdminService.TriggerMaintenance.
 func (c *storeAdminServiceClient) TriggerMaintenance(ctx context.Context, req *connect.Request[TriggerMaintenanceRequest]) (*connect.Response[TriggerMaintenanceResponse], error) {
 	return c.triggerMaintenance.CallUnary(ctx, req)
@@ -177,6 +193,7 @@ type StoreAdminServiceHandler interface {
 	SetQuota(context.Context, *connect.Request[SetQuotaRequest]) (*connect.Response[SetQuotaResponse], error)
 	GetUsage(context.Context, *connect.Request[GetUsageRequest]) (*connect.Response[GetUsageResponse], error)
 	DeleteStore(context.Context, *connect.Request[DeleteStoreRequest]) (*connect.Response[DeleteStoreResponse], error)
+	RestoreStore(context.Context, *connect.Request[RestoreStoreRequest]) (*connect.Response[RestoreStoreResponse], error)
 	TriggerMaintenance(context.Context, *connect.Request[TriggerMaintenanceRequest]) (*connect.Response[TriggerMaintenanceResponse], error)
 }
 
@@ -223,6 +240,12 @@ func NewStoreAdminServiceHandler(svc StoreAdminServiceHandler, opts ...connect.H
 		connect.WithSchema(storeAdminServiceMethods.ByName("DeleteStore")),
 		connect.WithHandlerOptions(opts...),
 	)
+	storeAdminServiceRestoreStoreHandler := connect.NewUnaryHandler(
+		StoreAdminServiceRestoreStoreProcedure,
+		svc.RestoreStore,
+		connect.WithSchema(storeAdminServiceMethods.ByName("RestoreStore")),
+		connect.WithHandlerOptions(opts...),
+	)
 	storeAdminServiceTriggerMaintenanceHandler := connect.NewUnaryHandler(
 		StoreAdminServiceTriggerMaintenanceProcedure,
 		svc.TriggerMaintenance,
@@ -243,6 +266,8 @@ func NewStoreAdminServiceHandler(svc StoreAdminServiceHandler, opts ...connect.H
 			storeAdminServiceGetUsageHandler.ServeHTTP(w, r)
 		case StoreAdminServiceDeleteStoreProcedure:
 			storeAdminServiceDeleteStoreHandler.ServeHTTP(w, r)
+		case StoreAdminServiceRestoreStoreProcedure:
+			storeAdminServiceRestoreStoreHandler.ServeHTTP(w, r)
 		case StoreAdminServiceTriggerMaintenanceProcedure:
 			storeAdminServiceTriggerMaintenanceHandler.ServeHTTP(w, r)
 		default:
@@ -276,6 +301,10 @@ func (UnimplementedStoreAdminServiceHandler) GetUsage(context.Context, *connect.
 
 func (UnimplementedStoreAdminServiceHandler) DeleteStore(context.Context, *connect.Request[DeleteStoreRequest]) (*connect.Response[DeleteStoreResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nextgui.protovcs.v1.StoreAdminService.DeleteStore is not implemented"))
+}
+
+func (UnimplementedStoreAdminServiceHandler) RestoreStore(context.Context, *connect.Request[RestoreStoreRequest]) (*connect.Response[RestoreStoreResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("nextgui.protovcs.v1.StoreAdminService.RestoreStore is not implemented"))
 }
 
 func (UnimplementedStoreAdminServiceHandler) TriggerMaintenance(context.Context, *connect.Request[TriggerMaintenanceRequest]) (*connect.Response[TriggerMaintenanceResponse], error) {

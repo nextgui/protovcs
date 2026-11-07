@@ -34,6 +34,11 @@ const ReservationTTL = 30 * time.Minute
 // distinguishes the two, and it is deliberately longer than ReservationTTL.
 const CollectionGrace = time.Hour
 
+// DeletionRetention is how long a deleted store can be restored before
+// collection starts removing it, unless the server is given another window
+// with [Server.WithDeletionRetention].
+const DeletionRetention = time.Hour
+
 // Server enforces the rules. It holds no keys and reads nothing it stores.
 type Server struct {
 	storage Storage
@@ -49,6 +54,9 @@ type Server struct {
 	// Asked to run a pack pass when a hint arrives, or nil, in which case only
 	// the sweep packs. See pack.go.
 	packScheduler PackScheduler
+
+	// How long a deleted store waits before collection purges it.
+	deletionRetention time.Duration
 }
 
 // New returns a server over a storage implementation.
@@ -59,7 +67,16 @@ func New(storage Storage) *Server {
 		watch:             newRefWatchers(),
 		refPollInterval:   RefPollInterval,
 		refRelistInterval: RefRelistInterval,
+		deletionRetention: DeletionRetention,
 	}
+}
+
+// WithDeletionRetention sets how long a deleted store can be restored before
+// collection purges it. Zero purges it on the next collection, for an
+// application whose deletion must be immediate.
+func (s *Server) WithDeletionRetention(d time.Duration) *Server {
+	s.deletionRetention = d
+	return s
 }
 
 // WithClock replaces the clock, for tests that need to reach an expiry without
@@ -108,12 +125,39 @@ func (s *Server) SetQuota(ctx context.Context, storeID string, quota *pb.Quota) 
 
 // DeleteStore marks a store for deletion without removing anything.
 //
-// The chunks go when collection runs, after the retention window. A deletion
-// that cannot be undone in its first hour is one that will be regretted.
+// The chunks go when collection runs after the retention window, and until
+// then [Server.RestoreStore] undoes it. A deletion that cannot be undone in its
+// first hour is one that will be regretted. Deleting a store already marked
+// keeps the time it was first marked.
 func (s *Server) DeleteStore(ctx context.Context, storeID string) (*pb.Store, error) {
 	return s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+		if st.GetState() != pb.Store_STATE_ACTIVE {
+			return nil
+		}
 		st.State = pb.Store_STATE_DELETING
+		st.DeletedAt = timestamppb.New(s.now())
 		return nil
+	})
+}
+
+// RestoreStore makes a deleted store active again, if collection has not
+// started purging it.
+//
+// The check and the change are one conditional update of the store's record,
+// and collection moves a store to purging the same way, so a restore and a
+// purge cannot both succeed.
+func (s *Server) RestoreStore(ctx context.Context, storeID string) (*pb.Store, error) {
+	return s.storage.Update(ctx, storeID, func(st *pb.Store) error {
+		switch st.GetState() {
+		case pb.Store_STATE_ACTIVE:
+			return nil
+		case pb.Store_STATE_DELETING:
+			st.State = pb.Store_STATE_ACTIVE
+			st.DeletedAt = nil
+			return nil
+		default:
+			return fmt.Errorf("%w: %s is being purged", ErrNotRestorable, storeID)
+		}
 	})
 }
 

@@ -168,6 +168,7 @@ protovcsd -dir ./stores -token_key token.pub
 | `-open` | Serve every request without a token. For a server only its owner can reach. |
 | `-allow_origin` | Page origins allowed to call the server from a browser. Defaults to any. |
 | `-sweep_interval` | How often to collect garbage. Defaults to 6 hours. |
+| `-deletion_retention` | How long a deleted store can be restored with `RestoreStore` before collection removes it. Defaults to an hour; 0 removes it on the next collection. |
 
 To embed the server in another process instead, mount `connectserver` on an `http.ServeMux`.
 

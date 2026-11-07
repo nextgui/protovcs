@@ -77,6 +77,16 @@ func (a *Admin) DeleteStore(ctx context.Context, req *pb.DeleteStoreRequest) (*p
 	return &pb.DeleteStoreResponse{Store: store}, nil
 }
 
+// RestoreStore undoes DeleteStore, while collection has not started purging
+// the store.
+func (a *Admin) RestoreStore(ctx context.Context, req *pb.RestoreStoreRequest) (*pb.RestoreStoreResponse, error) {
+	store, err := a.server.RestoreStore(ctx, req.GetStoreId())
+	if err != nil {
+		return nil, asConnect(err)
+	}
+	return &pb.RestoreStoreResponse{Store: store}, nil
+}
+
 // TriggerMaintenance runs a job now rather than on the schedule.
 func (a *Admin) TriggerMaintenance(ctx context.Context, req *pb.TriggerMaintenanceRequest) (*pb.TriggerMaintenanceResponse, error) {
 	switch req.GetKind() {

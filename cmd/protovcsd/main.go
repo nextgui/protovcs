@@ -52,6 +52,7 @@ var (
 	open     = flag.Bool("open", false, "serve every request without checking a token; for a single-user server only")
 	origins  = flag.String("allow_origin", "*", "comma-separated page origins allowed to call this server from a browser; * for any")
 	sweep    = flag.Duration("sweep_interval", 6*time.Hour, "how often to collect garbage in every store; 0 to never")
+	retain   = flag.Duration("deletion_retention", server.DeletionRetention, "how long a deleted store can be restored before collection purges it; 0 to purge on the next collection")
 )
 
 func main() {
@@ -77,7 +78,7 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	srv := server.New(storage)
+	srv := server.New(storage).WithDeletionRetention(*retain)
 	mux := http.NewServeMux()
 	if err := connectserver.Mount(mux, srv, auth); err != nil {
 		return err

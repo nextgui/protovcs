@@ -34,11 +34,16 @@ service StoreAdminService {
   // user where they are against their ceiling.
   rpc GetUsage(GetUsageRequest) returns (GetUsageResponse);
 
-  // DeleteStore marks a store for deletion. Its chunks are removed by the
-  // maintenance job after the retention window, not by this call: a deletion
-  // that cannot be undone for the first hour is a deletion that will one day be
-  // regretted.
+  // DeleteStore marks a store for deletion and refuses its reads and writes
+  // from then on. Its chunks are removed by collection once the server's
+  // retention window has passed, not by this call, and until then
+  // RestoreStore undoes it. Deleting a store already marked changes nothing.
   rpc DeleteStore(DeleteStoreRequest) returns (DeleteStoreResponse);
+
+  // RestoreStore undoes DeleteStore, while collection has not started removing
+  // the store's chunks. A store already active is returned unchanged, and one
+  // being purged is refused.
+  rpc RestoreStore(RestoreStoreRequest) returns (RestoreStoreResponse);
 
   // TriggerMaintenance runs collection, compaction or reconciliation now
   // instead of on the schedule.
@@ -82,6 +87,11 @@ message Store {
   // is the case it exists for.
   uint32 min_writable_schema_version = 8;
 
+  // When DeleteStore marked the store, by the server's clock. Unset on an
+  // active store, and on a store marked before this field existed, which is
+  // collected without a window.
+  google.protobuf.Timestamp deleted_at = 9;
+
   // State is whether a store is usable.
   enum State {
     // Never set on a stored record.
@@ -91,8 +101,13 @@ message Store {
     STATE_ACTIVE = 1;
 
     // Deleted by a caller, chunks not yet removed. Reads and writes are
-    // refused; the data is still recoverable until the retention window ends.
+    // refused. RestoreStore makes it active again, until collection starts
+    // purging it once the retention window after deleted_at has passed.
     STATE_DELETING = 2;
+
+    // Past its retention window, with collection removing its chunks. It
+    // cannot be restored.
+    STATE_PURGING = 3;
   }
 }
 
@@ -247,6 +262,18 @@ message DeleteStoreRequest {
 
 // DeleteStoreResponse carries the record, now marked for deletion.
 message DeleteStoreResponse {
+  // The record as stored.
+  Store store = 1;
+}
+
+// RestoreStoreRequest names the store to restore.
+message RestoreStoreRequest {
+  // Which store.
+  string store_id = 1;
+}
+
+// RestoreStoreResponse carries the record, active again.
+message RestoreStoreResponse {
   // The record as stored.
   Store store = 1;
 }
