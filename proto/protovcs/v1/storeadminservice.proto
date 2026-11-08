@@ -167,6 +167,11 @@ message Usage {
   // The day bytes_today counts for: a calendar date in America/Los_Angeles,
   // as days since 1970-01-01.
   int64 bytes_today_day = 8;
+
+  // Reservations stored and not yet released, whether or not they have
+  // expired. Limited by the server, because each is a stored object and a
+  // reservation for nothing passes every quota check.
+  uint32 reservations = 9;
 }
 
 // CreateStoreRequest asks for a new store.

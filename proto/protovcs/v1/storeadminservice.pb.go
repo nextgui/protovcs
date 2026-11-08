@@ -325,6 +325,7 @@ type Usage struct {
 	ReservedBytes   uint64                 `protobuf:"varint,6,opt,name=reserved_bytes,json=reservedBytes,proto3" json:"reserved_bytes,omitempty"`
 	ReservedObjects uint64                 `protobuf:"varint,7,opt,name=reserved_objects,json=reservedObjects,proto3" json:"reserved_objects,omitempty"`
 	BytesTodayDay   int64                  `protobuf:"varint,8,opt,name=bytes_today_day,json=bytesTodayDay,proto3" json:"bytes_today_day,omitempty"`
+	Reservations    uint32                 `protobuf:"varint,9,opt,name=reservations,proto3" json:"reservations,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
@@ -411,6 +412,13 @@ func (x *Usage) GetReservedObjects() uint64 {
 func (x *Usage) GetBytesTodayDay() int64 {
 	if x != nil {
 		return x.BytesTodayDay
+	}
+	return 0
+}
+
+func (x *Usage) GetReservations() uint32 {
+	if x != nil {
+		return x.Reservations
 	}
 	return 0
 }
@@ -1221,7 +1229,7 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"\vmax_commits\x18\x04 \x01(\x04R\n" +
 	"maxCommits\x12\x19\n" +
 	"\bmax_refs\x18\x05 \x01(\rR\amaxRefs\x12)\n" +
-	"\x11max_bytes_per_day\x18\x06 \x01(\x04R\x0emaxBytesPerDay\"\x80\x02\n" +
+	"\x11max_bytes_per_day\x18\x06 \x01(\x04R\x0emaxBytesPerDay\"\xa4\x02\n" +
 	"\x05Usage\x12\x14\n" +
 	"\x05bytes\x18\x01 \x01(\x04R\x05bytes\x12\x18\n" +
 	"\aobjects\x18\x02 \x01(\x04R\aobjects\x12\x18\n" +
@@ -1231,7 +1239,8 @@ const file_proto_protovcs_v1_storeadminservice_proto_rawDesc = "" +
 	"bytesToday\x12%\n" +
 	"\x0ereserved_bytes\x18\x06 \x01(\x04R\rreservedBytes\x12)\n" +
 	"\x10reserved_objects\x18\a \x01(\x04R\x0freservedObjects\x12&\n" +
-	"\x0fbytes_today_day\x18\b \x01(\x03R\rbytesTodayDay\"w\n" +
+	"\x0fbytes_today_day\x18\b \x01(\x03R\rbytesTodayDay\x12\"\n" +
+	"\freservations\x18\t \x01(\rR\freservations\"w\n" +
 	"\x12CreateStoreRequest\x12\x19\n" +
 	"\bstore_id\x18\x01 \x01(\tR\astoreId\x12\x14\n" +
 	"\x05owner\x18\x02 \x01(\tR\x05owner\x120\n" +

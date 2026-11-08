@@ -284,7 +284,9 @@ bucket.
 `BeginWrite` checks the store's limits and reserves room before anything is
 uploaded, because at commit time the chunks would already be stored. Reserved
 amounts count as used, so two writers are never both told there is room for the
-same last bytes. A reservation expires after 30 minutes.
+same last bytes. A reservation expires after 30 minutes. A store may hold at
+most 32 reservations. Each one is a stored object, and a reservation for no
+chunks passes every other limit.
 
 The limits are total bytes, object count, bytes per chunk, commits, refs, and
 bytes per calendar day. Commits are never collected, so they are charged against

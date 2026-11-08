@@ -189,6 +189,51 @@ func TestAnAbandonedWriteDoesNotWaitForTheSweep(t *testing.T) {
 	}
 }
 
+func TestTheNumberOfOpenReservationsIsLimited(t *testing.T) {
+	ctx := context.Background()
+	storage := server.NewMemStorage()
+	now := time.Unix(1_800_000_000, 0).UTC()
+	s := server.New(storage).WithClock(func() time.Time { return now })
+
+	if _, err := s.CreateStore(ctx, &pb.CreateStoreRequest{StoreId: storeID, Quota: &pb.Quota{MaxBytes: 1 << 20}}); err != nil {
+		t.Fatalf("CreateStore: %v", err)
+	}
+	var first *server.Reservation
+	for i := range server.MaxReservations {
+		r, err := s.BeginWrite(ctx, storeID, 0, 0)
+		if err != nil {
+			t.Fatalf("reservation %d of %d: %v", i+1, server.MaxReservations, err)
+		}
+		if first == nil {
+			first = r
+		}
+	}
+	if _, err := s.BeginWrite(ctx, storeID, 0, 0); !errors.Is(err, server.ErrQuotaExceeded) {
+		t.Fatalf("a reservation past MaxReservations returned %v, want ErrQuotaExceeded", err)
+	}
+
+	// A finished write gives its place back.
+	if _, err := s.PutCommit(ctx, storeID, first.ID, commitNumbered(1)); err != nil {
+		t.Fatalf("PutCommit: %v", err)
+	}
+	if _, err := s.BeginWrite(ctx, storeID, 0, 0); err != nil {
+		t.Fatalf("a reservation after one was released: %v", err)
+	}
+
+	// Expired ones are released by the refusal, with no sweep between.
+	now = now.Add(2 * server.ReservationTTL)
+	if _, err := s.BeginWrite(ctx, storeID, 0, 0); err != nil {
+		t.Fatalf("a reservation once the others expired: %v", err)
+	}
+	st, err := s.GetStore(ctx, storeID)
+	if err != nil {
+		t.Fatalf("GetStore: %v", err)
+	}
+	if got := st.GetUsage().GetReservations(); got != 1 {
+		t.Errorf("reservations after the expired ones were released = %d, want 1", got)
+	}
+}
+
 func TestStoringAChunkTwiceIsChargedOnce(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newServer(t, &pb.Quota{MaxBytes: 1 << 20})

@@ -36,6 +36,10 @@ func accountOf(st *pb.Store, now time.Time) account {
 // all, or fails with ErrQuotaExceeded.
 func (a account) reserve(chunks uint32, bytes uint64) error {
 	q, u := a.quota, a.usage
+	if u.GetReservations() >= MaxReservations {
+		return fmt.Errorf("%w: the store has %d reservations open, and at most %d may be",
+			ErrQuotaExceeded, u.GetReservations(), MaxReservations)
+	}
 	if max := q.GetMaxBytes(); max > 0 {
 		if exceeds(max, addSat(u.GetBytes(), u.GetReservedBytes()), bytes) {
 			return fmt.Errorf("%w: max_bytes is %d, using %d, this write needs %d",
@@ -57,6 +61,7 @@ func (a account) reserve(chunks uint32, bytes uint64) error {
 	}
 	u.ReservedObjects = addSat(u.ReservedObjects, uint64(chunks))
 	u.ReservedBytes = addSat(u.ReservedBytes, bytes)
+	u.Reservations++
 	return nil
 }
 
@@ -64,6 +69,9 @@ func (a account) reserve(chunks uint32, bytes uint64) error {
 func (a account) release(r *Reservation) {
 	a.usage.ReservedObjects = saturatingSub(a.usage.ReservedObjects, uint64(r.Chunks))
 	a.usage.ReservedBytes = saturatingSub(a.usage.ReservedBytes, r.Bytes)
+	if a.usage.Reservations > 0 {
+		a.usage.Reservations--
+	}
 }
 
 // storeChunks counts chunks that have been written. Their reservation already
@@ -137,6 +145,7 @@ func (a account) recount(counted *pb.Usage) {
 	u.Refs = counted.GetRefs()
 	u.ReservedObjects = counted.GetReservedObjects()
 	u.ReservedBytes = counted.GetReservedBytes()
+	u.Reservations = counted.GetReservations()
 }
 
 // bytesToday is what the usage says was written on the account's day. A

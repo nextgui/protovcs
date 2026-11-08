@@ -546,6 +546,7 @@ func (s *Server) reconcileOnce(ctx context.Context, storeID string) (before, aft
 			Refs:            uint32(len(refs)),
 			ReservedObjects: reservedObjects,
 			ReservedBytes:   reservedBytes,
+			Reservations:    uint32(len(reservations)),
 		})
 		return nil
 	})
