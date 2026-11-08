@@ -24,6 +24,14 @@ import (
 // somebody notices.
 const ReservationTTL = 30 * time.Minute
 
+// MaxReservations is how many reservations a store may hold before BeginWrite
+// refuses another. Each is a stored object, and one for no chunks and no
+// bytes passes every quota check, so without a limit a write token could
+// create them without end. A refusal first releases expired reservations, as
+// for any quota refusal, so only reservations younger than ReservationTTL
+// count against it.
+const MaxReservations = 32
+
 // CollectionGrace is how long an unreferenced chunk is kept before it is
 // deleted.
 //
