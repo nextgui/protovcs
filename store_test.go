@@ -444,6 +444,34 @@ func TestHidingHistoryDoesNotPassTheRollbackCheck(t *testing.T) {
 	}
 }
 
+func TestLogMissingParentReturnsNoSuchCommit(t *testing.T) {
+	ctx := context.Background()
+	tr := &hidingTransport{Transport: memtransport.New()}
+	s := newStore(t, tr, keyring(t))
+	b := s.Branch("main")
+
+	var heads []protovcs.CommitID
+	for i := 1; i <= 2; i++ {
+		id, err := b.Write(ctx, meta(fmt.Sprintf("write %d", i)), &testpb.Store{
+			Manifest: &testpb.Manifest{SchemaVersion: 1},
+			Records:  records(4 * i),
+		})
+		if err != nil {
+			t.Fatalf("Write: %v", err)
+		}
+		heads = append(heads, id)
+	}
+
+	// Reader in a fresh store so memo is empty for the parent commit.
+	reader := newStore(t, tr, keyring(t)).Branch("main")
+	tr.hidden = heads[0]
+
+	_, err := reader.Log(ctx, protovcs.LogOptions{})
+	if !errors.Is(err, protovcs.ErrNoSuchCommit) {
+		t.Fatalf("Log on missing parent returned %v, want ErrNoSuchCommit", err)
+	}
+}
+
 func TestAlteredChunksAreRefusedOnRead(t *testing.T) {
 	ctx := context.Background()
 	tr := memtransport.New()

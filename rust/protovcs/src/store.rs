@@ -1080,7 +1080,7 @@ impl Store {
         })
     }
 
-    async fn backoff(&self, attempt: usize) {
+    pub(crate) async fn backoff(&self, attempt: usize) {
         let sleep = &self.inner.sleep;
         let window = RETRY_BASE
             .checked_mul(1 << (attempt - 1).min(20))
