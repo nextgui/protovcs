@@ -1212,14 +1212,11 @@ impl Branch {
                 }
                 now
             };
-            let Some(now_id) = now else {
-                seen = None;
-                continue;
-            };
+            let Some(now_id) = now else { return Ok(()) };
             if !self.store.is_ancestor(head, now_id).await? {
                 return Ok(());
             }
-            seen = Some(now_id);
+            seen = now;
         }
     }
 
