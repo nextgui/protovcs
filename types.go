@@ -119,6 +119,10 @@ var (
 	// ErrNoSuchRef is returned for a branch that does not exist.
 	ErrNoSuchRef = errors.New("protovcs: no such ref")
 
+	// ErrBranchExists is returned by [Store.CreateBranch] for a name that is
+	// already a branch. The existing branch is left where it was.
+	ErrBranchExists = errors.New("protovcs: the branch already exists")
+
 	// ErrNoUsage is returned by [Store.Usage] when the transport cannot say.
 	// An in-memory store has no server to ask, so this is a fact about the
 	// transport rather than a failure, and a caller showing a figure should
