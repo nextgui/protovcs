@@ -42,6 +42,7 @@ go_test(
     name = "protovcs_test",
     size = "small",
     srcs = [
+        "branch_test.go",
         "canonical_test.go",
         "chunkcache_test.go",
         "complexity_test.go",

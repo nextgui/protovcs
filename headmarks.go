@@ -63,6 +63,10 @@ func (s *Store) loadMarks(ctx context.Context) error {
 	}
 	s.mu.Lock()
 	for branch, id := range loaded {
+		// A zero record is no record: [Branch.Delete] leaves one behind.
+		if id.IsZero() {
+			continue
+		}
 		s.stored[branch] = id
 		if _, ok := s.highWater[branch]; !ok {
 			s.highWater[branch] = id
@@ -117,6 +121,30 @@ func (s *Store) saveMark(ctx context.Context, branch string) {
 			}
 		}
 	}
+}
+
+// clearMark sets branch's record in the store's HeadMarks back to zero, after
+// the branch was deleted. Best effort, like saveMark: when another Store has
+// moved the record meanwhile, it is left as that Store wrote it.
+func (s *Store) clearMark(ctx context.Context, branch string) {
+	if s.headMarks == nil || s.loadMarks(ctx) != nil {
+		return
+	}
+	s.saveMu.Lock()
+	defer s.saveMu.Unlock()
+	s.mu.Lock()
+	old := s.stored[branch]
+	s.mu.Unlock()
+	if old.IsZero() {
+		return
+	}
+	now, err := s.headMarks.CompareAndSwap(ctx, branch, old, CommitID{})
+	if err != nil || !now.IsZero() {
+		return
+	}
+	s.mu.Lock()
+	delete(s.stored, branch)
+	s.mu.Unlock()
 }
 
 // MemoryHeadMarks is a [HeadMarks] held in memory. Stores built over the same

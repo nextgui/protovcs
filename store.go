@@ -133,6 +133,69 @@ type Branch struct {
 // Name returns the branch's readable name.
 func (b *Branch) Name() string { return b.name }
 
+// CreateBranch points a new branch at an existing commit.
+//
+// Returns [ErrBranchExists] if the name is already a branch, and leaves that
+// branch alone. The commit must already be stored; the transport refuses one
+// that is not.
+func (s *Store) CreateBranch(ctx context.Context, name string, at CommitID) error {
+	if at.IsZero() {
+		return fmt.Errorf("protovcs: cannot create branch %s at the zero commit", name)
+	}
+	// An empty expected token creates, and fails when the ref exists. That is
+	// the only way this call loses a race, so it is reported as the name being
+	// taken.
+	if _, err := s.transport.UpdateRef(ctx, s.sealer.RefName(name), at, "", false); err != nil {
+		if isRaceLost(err) {
+			return fmt.Errorf("%w: %s", ErrBranchExists, name)
+		}
+		return err
+	}
+
+	s.mu.Lock()
+	s.highWater[name] = at
+	s.mu.Unlock()
+	s.saveMark(ctx, name)
+	return nil
+}
+
+// Delete removes the branch. The commits it pointed at stay until garbage
+// collection finds nothing else reaches them.
+//
+// Returns [ErrNoSuchRef] if the branch does not exist, and [ErrRaceLost] if
+// another writer moved it between reading it and deleting it. A branch that
+// moved is not deleted, so a caller does not remove a commit it never saw.
+//
+// The branch's head mark is cleared too, so the name can be created again at
+// an older commit without being taken for a rollback.
+func (b *Branch) Delete(ctx context.Context) error {
+	refs, err := b.store.transport.ListRefs(ctx)
+	if err != nil {
+		return err
+	}
+	token, found := "", false
+	for _, r := range refs {
+		if string(r.Name) == string(b.refName) {
+			token, found = r.CASToken, true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("%w: %s", ErrNoSuchRef, b.name)
+	}
+
+	// A zero commit deletes.
+	if _, err := b.store.transport.UpdateRef(ctx, b.refName, CommitID{}, token, false); err != nil {
+		return err
+	}
+
+	b.store.mu.Lock()
+	delete(b.store.highWater, b.name)
+	b.store.mu.Unlock()
+	b.store.clearMark(ctx, b.name)
+	return nil
+}
+
 // Head returns the commit this branch points at, or ErrNoSuchRef.
 //
 // It refuses a head older than one this Store has already returned, or than
